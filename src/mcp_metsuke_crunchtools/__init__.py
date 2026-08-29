@@ -32,8 +32,8 @@ def main() -> None:
     parser.add_argument(
         "--port",
         type=int,
-        default=8024,
-        help="HTTP port (default: 8024)",
+        default=8009,
+        help="HTTP port (default: 8009)",
     )
 
     args = parser.parse_args()

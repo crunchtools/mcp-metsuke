@@ -37,7 +37,7 @@ pip install mcp-metsuke-crunchtools
 ```bash
 podman run --rm -v ~/.local/share/mcp-metsuke:/data:Z \
   quay.io/crunchtools/mcp-metsuke \
-  --transport streamable-http --host 0.0.0.0 --port 8024
+  --transport streamable-http --host 0.0.0.0 --port 8009
 ```
 
 ## Claude Code Integration

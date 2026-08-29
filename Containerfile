@@ -9,7 +9,7 @@
 #   podman run --rm --userns=keep-id --user $(id -u):$(id -g) \
 #     -v ~/.local/share/mcp-metsuke:/data:Z \
 #     quay.io/crunchtools/mcp-metsuke \
-#     --transport streamable-http --host 0.0.0.0 --port 8024
+#     --transport streamable-http --host 0.0.0.0 --port 8009
 
 # Stage 1: Build into a venv (Hummingbird FIPS builder — same family as runtime)
 FROM quay.io/hummingbird/python:latest-fips-builder AS builder
@@ -44,5 +44,5 @@ ENV PATH="/app/venv/bin:$PATH"
 
 ENV METSUKE_DB=/data/metsuke.db
 
-EXPOSE 8024
+EXPOSE 8009
 ENTRYPOINT ["python", "-m", "mcp_metsuke_crunchtools"]

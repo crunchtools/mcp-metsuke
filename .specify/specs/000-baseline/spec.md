@@ -53,7 +53,7 @@ findings; a compiler later reads the freshest output to draft a report.
 - Plain stdlib SQLite (WAL journal, foreign keys on) — no vector/FTS extensions
 - Pydantic v2 input validation (`extra="forbid"`, field limits, `Literal` status)
 - Two-layer tools: pure functions in `tools/` called by `server.py` wrappers
-- Three transports: stdio (default), SSE, streamable-http (port 8024)
+- Three transports: stdio (default), SSE, streamable-http (port 8009)
 - Surfaces through the Trentina gateway as `mcp__trentina__metsuke__*`
 
 ## Non-Goals (v0.1.0)

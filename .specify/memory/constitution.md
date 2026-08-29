@@ -197,7 +197,7 @@ GHA build cache is mandatory (`cache-from/to: type=gha`); never `--no-cache`.
 | Container image | `quay.io/crunchtools/mcp-metsuke` |
 | systemd service | `mcp-metsuke.service` |
 | Gateway backend key | `metsuke` (tools surface as `mcp__trentina__metsuke__*`) |
-| HTTP port | 8024 |
+| HTTP port | 8009 |
 | License | AGPL-3.0-or-later |
 
 ---

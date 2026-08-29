@@ -8,7 +8,7 @@ gather) and their gathered **outputs** (findings with source URLs).
 ```bash
 uv sync --all-extras
 uv run mcp-metsuke-crunchtools                 # stdio (default)
-uv run mcp-metsuke-crunchtools --transport streamable-http --port 8024
+uv run mcp-metsuke-crunchtools --transport streamable-http --port 8009
 ```
 
 ## Environment Variables
