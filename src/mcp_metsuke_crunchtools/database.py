@@ -78,16 +78,13 @@ def execute(sql: str, params: tuple[Any, ...] = ()) -> int:
     return cursor.lastrowid or 0
 
 
-# --- Report definitions ---
-
-
 def list_definitions() -> list[dict[str, Any]]:
     """Return all report definitions, newest-updated first."""
     rows = query(
         "SELECT name, gather_prompt, owner_agent, schedule, source_config, "
         "updated_at FROM report_definitions ORDER BY updated_at DESC"
     )
-    return [_decode_definition(row) for row in rows]
+    return [_decode_row(row, "source_config") for row in rows]
 
 
 def get_definition(name: str) -> dict[str, Any] | None:
@@ -97,7 +94,7 @@ def get_definition(name: str) -> dict[str, Any] | None:
         "updated_at FROM report_definitions WHERE name = ?",
         (name,),
     )
-    return _decode_definition(row) if row else None
+    return _decode_row(row, "source_config") if row else None
 
 
 def upsert_definition(
@@ -125,9 +122,6 @@ def upsert_definition(
     if stored is None:  # pragma: no cover - just-written row always exists
         raise RuntimeError(f"Failed to persist definition: {name}")
     return stored
-
-
-# --- Report outputs ---
 
 
 def insert_output(
@@ -162,7 +156,7 @@ def get_latest_output(name: str) -> dict[str, Any] | None:
         "WHERE report_name = ? ORDER BY gathered_at DESC, id DESC LIMIT 1",
         (name,),
     )
-    return _decode_output(row) if row else None
+    return _decode_row(row, "payload") if row else None
 
 
 def get_output_on_date(name: str, on_date: str) -> dict[str, Any] | None:
@@ -174,7 +168,7 @@ def get_output_on_date(name: str, on_date: str) -> dict[str, Any] | None:
         "ORDER BY gathered_at DESC, id DESC LIMIT 1",
         (name, on_date),
     )
-    return _decode_output(row) if row else None
+    return _decode_row(row, "payload") if row else None
 
 
 def get_output_by_id(output_id: int) -> dict[str, Any] | None:
@@ -184,22 +178,12 @@ def get_output_by_id(output_id: int) -> dict[str, Any] | None:
         "payload, status, gatherer_run_ref FROM report_outputs WHERE id = ?",
         (output_id,),
     )
-    return _decode_output(row) if row else None
+    return _decode_row(row, "payload") if row else None
 
 
-# --- Row decoders ---
-
-
-def _decode_definition(row: dict[str, Any]) -> dict[str, Any]:
-    """Parse the JSON source_config column back into a dict."""
+def _decode_row(row: dict[str, Any], json_column: str) -> dict[str, Any]:
+    """Return a copy of row with json_column parsed from JSON text to a value."""
     decoded = dict(row)
-    raw = decoded.get("source_config")
-    decoded["source_config"] = json.loads(raw) if raw else None
-    return decoded
-
-
-def _decode_output(row: dict[str, Any]) -> dict[str, Any]:
-    """Parse the JSON payload column back into structured findings."""
-    decoded = dict(row)
-    decoded["payload"] = json.loads(decoded["payload"])
+    raw = decoded.get(json_column)
+    decoded[json_column] = json.loads(raw) if raw else None
     return decoded

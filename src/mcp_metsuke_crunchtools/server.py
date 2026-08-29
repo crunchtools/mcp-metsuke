@@ -10,6 +10,7 @@ from .models import (
     GetOutputParams,
     GetSpecParams,
     SaveOutputParams,
+    Status,
     UpsertDefinitionParams,
 )
 from .tools import (
@@ -106,7 +107,7 @@ async def metsuke_save_output_tool(
     payload: list[dict[str, Any]],
     window_start: str | None = None,
     window_end: str | None = None,
-    status: str = "ready",
+    status: Status = "ready",
     gatherer_run_ref: str | None = None,
 ) -> dict[str, Any]:
     """Persist a gathered report output.
@@ -127,7 +128,7 @@ async def metsuke_save_output_tool(
         payload=payload,
         window_start=window_start,
         window_end=window_end,
-        status=status,  # type: ignore[arg-type]
+        status=status,
         gatherer_run_ref=gatherer_run_ref,
     )
     return await metsuke_save_output(
