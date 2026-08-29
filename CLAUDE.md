@@ -19,13 +19,13 @@ uv run mcp-metsuke-crunchtools --transport streamable-http --port 8009
 ## Tools (5)
 
 ### Definitions (3)
-- `metsuke_list_reports_tool` — list all report definitions
-- `metsuke_get_spec_tool` — gather prompt + source config for one definition
-- `metsuke_upsert_definition_tool` — create/update a definition
+- `list_reports_tool` — list all report definitions
+- `get_spec_tool` — gather prompt + source config for one definition
+- `upsert_definition_tool` — create/update a definition
 
 ### Outputs (2)
-- `metsuke_save_output_tool` — gatherer writes findings here
-- `metsuke_get_output_tool` — compiler reads freshest (or by-date) output
+- `save_output_tool` — gatherer writes findings here
+- `get_output_tool` — compiler reads freshest (or by-date) output
 
 ## Development
 

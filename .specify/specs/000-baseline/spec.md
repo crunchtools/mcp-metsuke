@@ -16,13 +16,13 @@ findings; a compiler later reads the freshest output to draft a report.
 ## Tools
 
 ### Definitions (3)
-- `metsuke_list_reports` — list all report definitions
-- `metsuke_get_spec` — return gather prompt + source config for one definition
-- `metsuke_upsert_definition` — create or update a definition
+- `list_reports` — list all report definitions
+- `get_spec` — return gather prompt + source config for one definition
+- `upsert_definition` — create or update a definition
 
 ### Outputs (2)
-- `metsuke_save_output` — persist gathered findings for a report
-- `metsuke_get_output` — read the freshest (or a specific day's) output
+- `save_output` — persist gathered findings for a report
+- `get_output` — read the freshest (or a specific day's) output
 
 ## Data Model
 

@@ -8,7 +8,7 @@ from .. import database as db
 from ..errors import DefinitionNotFoundError, OutputNotFoundError
 
 
-async def metsuke_save_output(
+async def save_output(
     report_name: str,
     payload: list[dict[str, Any]],
     window_start: str | None = None,
@@ -34,7 +34,7 @@ async def metsuke_save_output(
     return stored
 
 
-async def metsuke_get_output(
+async def get_output(
     name: str,
     gathered_date: str | None = None,
 ) -> dict[str, Any]:

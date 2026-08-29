@@ -52,16 +52,16 @@ claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 
 | Tool | Description |
 |------|-------------|
-| `metsuke_list_reports` | List all report definitions in the catalog. |
-| `metsuke_get_spec` | Return the gather prompt + source config for one definition. |
-| `metsuke_upsert_definition` | Create or update a definition (name, prompt, owner, schedule, sources). |
+| `list_reports` | List all report definitions in the catalog. |
+| `get_spec` | Return the gather prompt + source config for one definition. |
+| `upsert_definition` | Create or update a definition (name, prompt, owner, schedule, sources). |
 
 ### Outputs (2)
 
 | Tool | Description |
 |------|-------------|
-| `metsuke_save_output` | Persist gathered findings for a report (each ideally carrying a source URL). |
-| `metsuke_get_output` | Read the freshest output (or a specific day's) for compiling a report. |
+| `save_output` | Persist gathered findings for a report (each ideally carrying a source URL). |
+| `get_output` | Read the freshest output (or a specific day's) for compiling a report. |
 
 ## Environment Variables
 

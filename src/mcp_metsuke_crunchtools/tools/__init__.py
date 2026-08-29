@@ -1,16 +1,16 @@
 """Tool implementations for mcp-metsuke-crunchtools."""
 
 from .definitions import (
-    metsuke_get_spec,
-    metsuke_list_reports,
-    metsuke_upsert_definition,
+    get_spec,
+    list_reports,
+    upsert_definition,
 )
-from .outputs import metsuke_get_output, metsuke_save_output
+from .outputs import get_output, save_output
 
 __all__ = [
-    "metsuke_list_reports",
-    "metsuke_get_spec",
-    "metsuke_upsert_definition",
-    "metsuke_save_output",
-    "metsuke_get_output",
+    "list_reports",
+    "get_spec",
+    "upsert_definition",
+    "save_output",
+    "get_output",
 ]

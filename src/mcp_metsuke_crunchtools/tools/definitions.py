@@ -8,12 +8,12 @@ from .. import database as db
 from ..errors import DefinitionNotFoundError
 
 
-async def metsuke_list_reports() -> list[dict[str, Any]]:
+async def list_reports() -> list[dict[str, Any]]:
     """List all report definitions in the catalog."""
     return db.list_definitions()
 
 
-async def metsuke_get_spec(name: str) -> dict[str, Any]:
+async def get_spec(name: str) -> dict[str, Any]:
     """Return the gather prompt and source config for a report definition.
 
     This is what the autonomous gatherer calls on callback to learn what to
@@ -25,7 +25,7 @@ async def metsuke_get_spec(name: str) -> dict[str, Any]:
     return definition
 
 
-async def metsuke_upsert_definition(
+async def upsert_definition(
     name: str,
     gather_prompt: str,
     owner_agent: str = "kagetora",

@@ -14,16 +14,16 @@ from .models import (
     UpsertDefinitionParams,
 )
 from .tools import (
-    metsuke_get_output,
-    metsuke_get_spec,
-    metsuke_list_reports,
-    metsuke_save_output,
-    metsuke_upsert_definition,
+    get_output,
+    get_spec,
+    list_reports,
+    save_output,
+    upsert_definition,
 )
 
 mcp = FastMCP(
     "mcp-metsuke-crunchtools",
-    version="0.1.0",
+    version="0.2.0",
     instructions=(
         "Stateful reports catalog. Metsuke stores report DEFINITIONS (what to "
         "gather, and which agent owns the gather) and their gathered OUTPUTS "
@@ -39,17 +39,17 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-async def metsuke_list_reports_tool() -> list[dict[str, Any]]:
+async def list_reports_tool() -> list[dict[str, Any]]:
     """List all report definitions in the catalog.
 
     Returns each definition with its gather prompt, owner agent, schedule,
     source config, and last-updated time.
     """
-    return await metsuke_list_reports()
+    return await list_reports()
 
 
 @mcp.tool()
-async def metsuke_get_spec_tool(name: str) -> dict[str, Any]:
+async def get_spec_tool(name: str) -> dict[str, Any]:
     """Return the gather spec (prompt + source config) for a report definition.
 
     This is what the autonomous gatherer calls on callback to learn what to
@@ -59,11 +59,11 @@ async def metsuke_get_spec_tool(name: str) -> dict[str, Any]:
         name: The report definition name (e.g. "core-platform-status")
     """
     params = GetSpecParams(name=name)
-    return await metsuke_get_spec(params.name)
+    return await get_spec(params.name)
 
 
 @mcp.tool()
-async def metsuke_upsert_definition_tool(
+async def upsert_definition_tool(
     name: str,
     gather_prompt: str,
     owner_agent: str = "kagetora",
@@ -89,7 +89,7 @@ async def metsuke_upsert_definition_tool(
         schedule=schedule,
         source_config=source_config,
     )
-    return await metsuke_upsert_definition(
+    return await upsert_definition(
         params.name,
         params.gather_prompt,
         params.owner_agent,
@@ -102,7 +102,7 @@ async def metsuke_upsert_definition_tool(
 
 
 @mcp.tool()
-async def metsuke_save_output_tool(
+async def save_output_tool(
     report_name: str,
     payload: list[dict[str, Any]],
     window_start: str | None = None,
@@ -131,7 +131,7 @@ async def metsuke_save_output_tool(
         status=status,
         gatherer_run_ref=gatherer_run_ref,
     )
-    return await metsuke_save_output(
+    return await save_output(
         params.report_name,
         params.payload,
         params.window_start,
@@ -142,7 +142,7 @@ async def metsuke_save_output_tool(
 
 
 @mcp.tool()
-async def metsuke_get_output_tool(
+async def get_output_tool(
     name: str,
     gathered_date: str | None = None,
 ) -> dict[str, Any]:
@@ -156,4 +156,4 @@ async def metsuke_get_output_tool(
         gathered_date: Optional YYYY-MM-DD to fetch that day's output instead
     """
     params = GetOutputParams(name=name, gathered_date=gathered_date)
-    return await metsuke_get_output(params.name, params.gathered_date)
+    return await get_output(params.name, params.gathered_date)
