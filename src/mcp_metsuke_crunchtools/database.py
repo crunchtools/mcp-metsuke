@@ -1,7 +1,9 @@
 """SQLite persistence for mcp-metsuke-crunchtools.
 
-Two tables: report_definitions (what to gather) and report_outputs (what was
-gathered). Plain stdlib sqlite3 — no external services, no vector extensions.
+Two tables: report_definitions (what to gather, and when) and report_outputs
+(what was gathered). Plain stdlib sqlite3 — no external services, no vector
+extensions. The scheduler thread uses its own connection (new_connection);
+the MCP server tools share the singleton (get_db).
 """
 
 from __future__ import annotations
@@ -20,7 +22,9 @@ CREATE TABLE IF NOT EXISTS report_definitions (
     gather_prompt TEXT NOT NULL,
     owner_agent TEXT NOT NULL DEFAULT 'kagetora',
     schedule TEXT,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
     source_config TEXT,
+    last_fired_at TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -38,21 +42,82 @@ CREATE INDEX IF NOT EXISTS idx_outputs_report ON report_outputs(report_name);
 CREATE INDEX IF NOT EXISTS idx_outputs_gathered ON report_outputs(gathered_at);
 """
 
+_MIGRATIONS = (
+    ("report_definitions", "timezone", "TEXT NOT NULL DEFAULT 'UTC'"),
+    ("report_definitions", "last_fired_at", "TEXT"),
+)
+
+_SELECT_ALL_DEFS = (
+    "SELECT name, gather_prompt, owner_agent, schedule, timezone, "
+    "source_config, last_fired_at, updated_at FROM report_definitions "
+    "ORDER BY updated_at DESC"
+)
+
+_SELECT_ONE_DEF = (
+    "SELECT name, gather_prompt, owner_agent, schedule, timezone, "
+    "source_config, last_fired_at, updated_at FROM report_definitions "
+    "WHERE name = ?"
+)
+
+
+def _configure(conn: sqlite3.Connection) -> None:
+    """Apply row factory and pragmas shared by every connection."""
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+
+
+def _init_schema(conn: sqlite3.Connection) -> None:
+    """Create tables if missing and apply column migrations."""
+    conn.executescript(SCHEMA)
+    existing_tables = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    for table, column, ddl in _MIGRATIONS:
+        if table not in existing_tables:
+            continue
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    conn.commit()
+
+
+def _open_connection() -> sqlite3.Connection:
+    """Open, configure, and schema-init a new connection to the configured DB."""
+    path = get_config().db_path
+    if path != ":memory:":
+        get_config().ensure_db_dir()
+    conn = sqlite3.connect(path)
+    _configure(conn)
+    _init_schema(conn)
+    return conn
+
 
 def get_db(db_path: str | None = None) -> sqlite3.Connection:
-    """Get or create the singleton database connection."""
+    """Get or create the singleton database connection (for MCP server tools)."""
     global _db
     if _db is None:
-        path = db_path or get_config().db_path
-        if path != ":memory:":
-            get_config().ensure_db_dir()
-        _db = sqlite3.connect(path)
-        _db.row_factory = sqlite3.Row
-        _db.execute("PRAGMA journal_mode=WAL")
-        _db.execute("PRAGMA foreign_keys=ON")
-        _db.executescript(SCHEMA)
-        _db.commit()
+        if db_path is not None:
+            path = db_path
+            if path != ":memory:":
+                get_config().ensure_db_dir()
+            _db = sqlite3.connect(path)
+            _configure(_db)
+            _init_schema(_db)
+        else:
+            _db = _open_connection()
     return _db
+
+
+def new_connection() -> sqlite3.Connection:
+    """Open a fresh, independent connection.
+
+    The scheduler runs in its own thread, so it cannot share the singleton
+    (sqlite3 connections are single-thread by default). WAL mode lets this
+    connection read/write concurrently with the server's connection.
+    """
+    return _open_connection()
 
 
 def query(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
@@ -80,20 +145,13 @@ def execute(sql: str, params: tuple[Any, ...] = ()) -> int:
 
 def list_definitions() -> list[dict[str, Any]]:
     """Return all report definitions, newest-updated first."""
-    rows = query(
-        "SELECT name, gather_prompt, owner_agent, schedule, source_config, "
-        "updated_at FROM report_definitions ORDER BY updated_at DESC"
-    )
+    rows = query(_SELECT_ALL_DEFS)
     return [_decode_row(row, "source_config") for row in rows]
 
 
 def get_definition(name: str) -> dict[str, Any] | None:
     """Return a single report definition, or None."""
-    row = query_one(
-        "SELECT name, gather_prompt, owner_agent, schedule, source_config, "
-        "updated_at FROM report_definitions WHERE name = ?",
-        (name,),
-    )
+    row = query_one(_SELECT_ONE_DEF, (name,))
     return _decode_row(row, "source_config") if row else None
 
 
@@ -102,26 +160,46 @@ def upsert_definition(
     gather_prompt: str,
     owner_agent: str,
     schedule: str | None,
+    timezone: str,
     source_config: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Insert or update a report definition. Returns the stored definition."""
     source_json = json.dumps(source_config) if source_config is not None else None
     execute(
         "INSERT INTO report_definitions "
-        "(name, gather_prompt, owner_agent, schedule, source_config, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, datetime('now')) "
+        "(name, gather_prompt, owner_agent, schedule, timezone, source_config, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, datetime('now')) "
         "ON CONFLICT(name) DO UPDATE SET "
         "gather_prompt = excluded.gather_prompt, "
         "owner_agent = excluded.owner_agent, "
         "schedule = excluded.schedule, "
+        "timezone = excluded.timezone, "
         "source_config = excluded.source_config, "
         "updated_at = datetime('now')",
-        (name, gather_prompt, owner_agent, schedule, source_json),
+        (name, gather_prompt, owner_agent, schedule, timezone, source_json),
     )
     stored = get_definition(name)
     if stored is None:  # pragma: no cover - just-written row always exists
         raise RuntimeError(f"Failed to persist definition: {name}")
     return stored
+
+
+def list_scheduled(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return definitions that carry a schedule (for the scheduler thread)."""
+    cursor = conn.execute(
+        "SELECT name, schedule, timezone, last_fired_at FROM report_definitions "
+        "WHERE schedule IS NOT NULL AND schedule != ''"
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def set_last_fired(conn: sqlite3.Connection, name: str, fired_at: str) -> None:
+    """Record the last time the scheduler fired a report (dedup across polls)."""
+    conn.execute(
+        "UPDATE report_definitions SET last_fired_at = ? WHERE name = ?",
+        (fired_at, name),
+    )
+    conn.commit()
 
 
 def insert_output(

@@ -43,14 +43,32 @@ class TestUpsertDefinitionParams:
             gather_prompt="do it",
             owner_agent="takeda",
             schedule="0 6 * * 5",
+            timezone="America/New_York",
             source_config={"sources": ["gmail"]},
         )
         assert params.owner_agent == "takeda"
+        assert params.timezone == "America/New_York"
         assert params.source_config == {"sources": ["gmail"]}
+
+    def test_default_timezone(self) -> None:
+        params = UpsertDefinitionParams(name="r", gather_prompt="do it")
+        assert params.timezone == "UTC"
 
     def test_empty_prompt_rejected(self) -> None:
         with pytest.raises(ValidationError):
             UpsertDefinitionParams(name="r", gather_prompt="")
+
+    def test_invalid_cron_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            UpsertDefinitionParams(name="r", gather_prompt="x", schedule="not a cron")
+
+    def test_empty_schedule_normalized_to_none(self) -> None:
+        params = UpsertDefinitionParams(name="r", gather_prompt="x", schedule="")
+        assert params.schedule is None
+
+    def test_invalid_timezone_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            UpsertDefinitionParams(name="r", gather_prompt="x", timezone="Mars/Phobos")
 
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):

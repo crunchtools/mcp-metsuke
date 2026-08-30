@@ -1,6 +1,6 @@
 [project]
 name = "mcp-metsuke-crunchtools"
-version = "0.2.0"
+version = "0.3.0"
 description = "Stateful reports catalog MCP server (definitions + gathered outputs)"
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
@@ -20,6 +20,8 @@ classifiers = [
 dependencies = [
     "fastmcp>=2.0",
     "pydantic>=2.0",
+    "httpx>=0.27",
+    "croniter>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -74,7 +76,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["fastmcp"]
+module = ["fastmcp", "croniter"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

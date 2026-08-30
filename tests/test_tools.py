@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from mcp_metsuke_crunchtools import config as config_mod
+from mcp_metsuke_crunchtools import scheduler
 from mcp_metsuke_crunchtools.errors import (
+    CallbackNotConfiguredError,
     DefinitionNotFoundError,
     OutputNotFoundError,
 )
@@ -14,6 +17,7 @@ from mcp_metsuke_crunchtools.server import mcp
 from mcp_metsuke_crunchtools.tools.definitions import (
     get_spec,
     list_reports,
+    trigger_report,
     upsert_definition,
 )
 from mcp_metsuke_crunchtools.tools.outputs import (
@@ -24,7 +28,7 @@ from mcp_metsuke_crunchtools.tools.outputs import (
 if TYPE_CHECKING:
     import sqlite3
 
-EXPECTED_TOOL_COUNT = 5
+EXPECTED_TOOL_COUNT = 6
 
 SAMPLE_PAYLOAD = [
     {"claim": "Shipped RHEL 11 beta", "source": "https://issues.redhat.com/browse/RHEL-1"},
@@ -80,6 +84,74 @@ class TestDefinitionTools:
     async def test_default_owner_agent(self, in_memory_db: sqlite3.Connection) -> None:
         stored = await upsert_definition("r2", "prompt")
         assert stored["owner_agent"] == "kagetora"
+
+    @pytest.mark.asyncio
+    async def test_schedule_populates_next_fire_at(self, in_memory_db: sqlite3.Connection) -> None:
+        stored = await upsert_definition(
+            "scheduled", "prompt", schedule="0 6 * * 5", timezone="America/New_York"
+        )
+        assert stored["timezone"] == "America/New_York"
+        assert stored["next_fire_at"] is not None
+
+        reports = await list_reports()
+        assert reports[0]["next_fire_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_unscheduled_has_no_next_fire(self, in_memory_db: sqlite3.Connection) -> None:
+        stored = await upsert_definition("manual", "prompt")
+        assert stored["next_fire_at"] is None
+
+
+class _FakeResponse:
+    status_code = 200
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+class _FakeClient:
+    async def __aenter__(self) -> _FakeClient:
+        return self
+
+    async def __aexit__(self, *_: object) -> bool:
+        return False
+
+    async def post(self, url: str, json: dict[str, object], timeout: float) -> _FakeResponse:
+        return _FakeResponse()
+
+
+class TestTriggerReport:
+    @pytest.mark.asyncio
+    async def test_trigger_unknown_report(self, in_memory_db: sqlite3.Connection) -> None:
+        with pytest.raises(DefinitionNotFoundError):
+            await trigger_report("nope")
+
+    @pytest.mark.asyncio
+    async def test_trigger_not_configured(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TRENTINA_ALERT_URL", raising=False)
+        monkeypatch.delenv("METSUKE_ALERT_TOKEN", raising=False)
+        config_mod._config = None
+        await upsert_definition("core-platform-status", "gather it")
+        with pytest.raises(CallbackNotConfiguredError):
+            await trigger_report("core-platform-status")
+
+    @pytest.mark.asyncio
+    async def test_trigger_configured_dispatches(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
+        monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
+        config_mod._config = None
+        monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient())
+        await upsert_definition("core-platform-status", "gather it")
+        result = await trigger_report("core-platform-status")
+        assert result == {
+            "report": "core-platform-status",
+            "dispatched": True,
+            "status_code": 200,
+        }
 
 
 class TestOutputTools:

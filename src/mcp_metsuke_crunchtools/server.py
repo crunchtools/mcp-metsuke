@@ -11,6 +11,7 @@ from .models import (
     GetSpecParams,
     SaveOutputParams,
     Status,
+    TriggerReportParams,
     UpsertDefinitionParams,
 )
 from .tools import (
@@ -18,19 +19,22 @@ from .tools import (
     get_spec,
     list_reports,
     save_output,
+    trigger_report,
     upsert_definition,
 )
 
 mcp = FastMCP(
     "mcp-metsuke-crunchtools",
-    version="0.2.0",
+    version="0.3.0",
     instructions=(
-        "Stateful reports catalog. Metsuke stores report DEFINITIONS (what to "
-        "gather, and which agent owns the gather) and their gathered OUTPUTS "
-        "(findings, each carrying a source URL for citation). An autonomous "
-        "gatherer reads a definition with get_spec, sweeps the sources, and "
-        "writes findings with save_output; a compiler later reads the freshest "
-        "output with get_output to draft a cited report."
+        "Stateful reports catalog with a built-in scheduler. Metsuke stores "
+        "report DEFINITIONS (what to gather, which agent owns the gather, and "
+        "the cron schedule) and their gathered OUTPUTS (findings, each carrying "
+        "a source URL for citation). Metsuke fires each definition when its "
+        "schedule comes due (or on demand via trigger_report) by calling back "
+        "the owning gatherer, which reads the spec with get_spec, sweeps the "
+        "sources, and writes findings with save_output; a compiler later reads "
+        "the freshest output with get_output to draft a cited report."
     ),
 )
 
@@ -68,18 +72,22 @@ async def upsert_definition_tool(
     gather_prompt: str,
     owner_agent: str = "kagetora",
     schedule: str | None = None,
+    timezone: str = "UTC",
     source_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create or update a report definition.
 
     The owner_agent field makes the gatherer identity data, not code, so
-    gathering can be re-homed to another agent without a rebuild.
+    gathering can be re-homed to another agent without a rebuild. The schedule
+    is a live cron expression: Metsuke's built-in scheduler fires the report
+    when it comes due, in the given timezone.
 
     Args:
         name: Unique report name (e.g. "core-platform-status")
         gather_prompt: The instruction the gatherer runs to collect findings
         owner_agent: Which agent gathers this report (default: "kagetora")
-        schedule: Descriptive cron/time metadata (the actual firing is external)
+        schedule: Cron expression for when to fire (e.g. "0 6 * * 5"); None = manual only
+        timezone: IANA timezone the schedule runs in (default: "UTC")
         source_config: Which sources to sweep, as a JSON object
     """
     params = UpsertDefinitionParams(
@@ -87,6 +95,7 @@ async def upsert_definition_tool(
         gather_prompt=gather_prompt,
         owner_agent=owner_agent,
         schedule=schedule,
+        timezone=timezone,
         source_config=source_config,
     )
     return await upsert_definition(
@@ -94,8 +103,25 @@ async def upsert_definition_tool(
         params.gather_prompt,
         params.owner_agent,
         params.schedule,
+        params.timezone,
         params.source_config,
     )
+
+
+@mcp.tool()
+async def trigger_report_tool(name: str) -> dict[str, Any]:
+    """Fire a report gather right now, without waiting for its schedule.
+
+    Dispatches the same callback the scheduler uses: Metsuke POSTs the trigger
+    to the Trentina alert endpoint, which forwards it to the owning gatherer.
+    Requires the callback to be configured (TRENTINA_ALERT_URL +
+    METSUKE_ALERT_TOKEN).
+
+    Args:
+        name: The report definition name to fire (e.g. "core-platform-status")
+    """
+    params = TriggerReportParams(name=name)
+    return await trigger_report(params.name)
 
 
 # --- Output Tools ---
