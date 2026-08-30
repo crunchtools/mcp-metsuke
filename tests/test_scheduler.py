@@ -22,6 +22,12 @@ class TestNextFireAt:
         assert parsed.hour == 6
         assert parsed.weekday() == 4
 
+    def test_invalid_schedule_returns_none(self) -> None:
+        assert scheduler.next_fire_at("every friday at 6am", "UTC") is None
+
+    def test_invalid_timezone_returns_none(self) -> None:
+        assert scheduler.next_fire_at("0 6 * * 5", "Mars/Olympus") is None
+
 
 class TestIsDue:
     def test_fires_new_slot(self) -> None:

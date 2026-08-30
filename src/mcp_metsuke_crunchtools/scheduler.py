@@ -39,9 +39,12 @@ def next_fire_at(schedule: str | None, tzname: str, base: datetime | None = None
     """
     if not schedule:
         return None
-    tz = ZoneInfo(tzname or "UTC")
-    anchor = base or datetime.now(tz)
-    nxt = cast("datetime", croniter(schedule, anchor).get_next(datetime))
+    try:
+        tz = ZoneInfo(tzname or "UTC")
+        anchor = base or datetime.now(tz)
+        nxt = cast("datetime", croniter(schedule, anchor).get_next(datetime))
+    except (ValueError, KeyError):
+        return None
     return nxt.isoformat()
 
 

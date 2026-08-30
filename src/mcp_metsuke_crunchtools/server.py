@@ -25,7 +25,7 @@ from .tools import (
 
 mcp = FastMCP(
     "mcp-metsuke-crunchtools",
-    version="0.3.0",
+    version="0.3.1",
     instructions=(
         "Stateful reports catalog with a built-in scheduler. Metsuke stores "
         "report DEFINITIONS (what to gather, which agent owns the gather, and "
