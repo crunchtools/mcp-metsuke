@@ -139,6 +139,25 @@ class TestCompleteRun(_SeededCase):
         assert saved["trigger"] == "direct"
         assert saved["run_id"].startswith("core-platform-status@")
 
+    @pytest.mark.asyncio
+    async def test_run_id_less_save_adopts_inflight_run(self) -> None:
+        # A fire opens a run; the gatherer completes but forgets to echo run_id.
+        opened = db.begin_run("core-platform-status", "manual")
+        completed = await save_output("core-platform-status", SAMPLE_PAYLOAD)
+
+        # The open run is adopted (not orphaned): same run_id, original trigger,
+        # and exactly one row — no duplicate direct save alongside a stuck row.
+        assert completed["run_id"] == opened["run_id"]
+        assert completed["status"] == "ready"
+        assert completed["trigger"] == "manual"
+        assert completed["payload"] == SAMPLE_PAYLOAD
+        rows = await list_outputs("core-platform-status")
+        assert len(rows) == 1
+
+        # The lock is released, so the report can be fired again immediately.
+        nxt = db.begin_run("core-platform-status", "scheduled")
+        assert nxt["run_id"] != opened["run_id"]
+
 
 class TestGetOutputSkipsIncomplete(_SeededCase):
     @pytest.mark.asyncio
