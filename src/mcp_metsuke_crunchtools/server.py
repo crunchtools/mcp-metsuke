@@ -31,16 +31,18 @@ from .tools import (
 
 mcp = FastMCP(
     "mcp-metsuke-crunchtools",
-    version="0.4.0",
+    version="0.5.0",
     instructions=(
-        "Stateful reports catalog with a built-in scheduler. Metsuke stores "
-        "report DEFINITIONS (what to gather, which agent owns the gather, and "
-        "the cron schedule) and their gathered OUTPUTS (findings, each carrying "
-        "a source URL for citation). Metsuke fires each definition when its "
-        "schedule comes due (or on demand via trigger_report) by calling back "
-        "the owning gatherer, which reads the spec with get_spec, sweeps the "
-        "sources, and writes findings with save_output; a compiler later reads "
-        "the freshest output with get_output to draft a cited report."
+        "Stateful reports catalog with a built-in scheduler and run lifecycle. "
+        "Metsuke stores report DEFINITIONS (what to gather, which agent owns the "
+        "gather, and the cron schedule) and their gathered OUTPUTS (findings, "
+        "each carrying a source URL for citation). Firing a definition — on its "
+        "schedule or on demand via trigger_report — opens a RUN: Metsuke records "
+        "a provisional row immediately (so a fire is never lost), hands the gatherer "
+        "a run_id, and lets only one run per report be in flight at a time. The "
+        "gatherer reads the spec with get_spec, sweeps the sources, and completes "
+        "its run by calling save_output with that run_id; a compiler later reads "
+        "the freshest completed output with get_output to draft a cited report."
     ),
 )
 
@@ -141,19 +143,24 @@ async def save_output_tool(
     window_end: str | None = None,
     status: Status = "ready",
     gatherer_run_ref: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Persist a gathered report output.
+    """Persist a gathered report output, completing the run that opened it.
 
     The gatherer writes findings here after sweeping the sources. Each finding
-    in payload should carry its own source URL so the compiler can cite it.
+    in payload should carry its own source URL so the compiler can cite it. Pass
+    the run_id Metsuke handed you in the fire callback so this completes that
+    exact in-flight run (one row per fire). Omit run_id for an ad-hoc direct
+    save; Metsuke stamps a fresh run identity either way.
 
     Args:
         report_name: The report definition this output belongs to
         payload: List of finding objects, each ideally carrying a source URL
         window_start: Start of the reporting window (ISO date/datetime)
         window_end: End of the reporting window (ISO date/datetime)
-        status: One of "gathering", "ready", "compiled" (default: "ready")
+        status: One of "gathering", "ready", "compiled", "failed" (default: "ready")
         gatherer_run_ref: Opaque reference to the gatherer run that produced this
+        run_id: The run to complete (from the fire callback); None = direct save
     """
     params = SaveOutputParams(
         report_name=report_name,
@@ -162,6 +169,7 @@ async def save_output_tool(
         window_end=window_end,
         status=status,
         gatherer_run_ref=gatherer_run_ref,
+        run_id=run_id,
     )
     return await save_output(
         params.report_name,
@@ -170,6 +178,7 @@ async def save_output_tool(
         params.window_end,
         params.status,
         params.gatherer_run_ref,
+        params.run_id,
     )
 
 

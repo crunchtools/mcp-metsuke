@@ -1,18 +1,27 @@
 """SQLite persistence for mcp-metsuke-crunchtools.
 
 Two tables: report_definitions (what to gather, and when) and report_outputs
-(what was gathered). Plain stdlib sqlite3 — no external services, no vector
-extensions. The scheduler thread uses its own connection (new_connection);
-the MCP server tools share the singleton (get_db).
+(what was gathered — one row per run). Plain stdlib sqlite3 — no external
+services, no vector extensions. The scheduler thread uses its own connection
+(new_connection); the MCP server tools share the singleton (get_db).
+
+A report *run* is a report_outputs row. Firing a report writes a ``gathering``
+provisional row before the callback is dispatched (guaranteed save), stamped with
+a second-granularity ``run_id``; the gatherer later completes that same row via
+save_output. A partial unique index on ``(report_name) WHERE status='gathering'``
+is the per-report concurrency lock: the database permits at most one in-flight
+run per report.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 from .config import get_config
+from .errors import RunInFlightError
 
 _db: sqlite3.Connection | None = None
 
@@ -31,20 +40,75 @@ CREATE TABLE IF NOT EXISTS report_definitions (
 CREATE TABLE IF NOT EXISTS report_outputs (
     id INTEGER PRIMARY KEY,
     report_name TEXT NOT NULL REFERENCES report_definitions(name) ON DELETE CASCADE,
+    run_id TEXT,
+    trigger TEXT,
     gathered_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT,
     window_start TEXT,
     window_end TEXT,
     payload TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'gathering',
-    gatherer_run_ref TEXT
+    gatherer_run_ref TEXT,
+    detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_outputs_report ON report_outputs(report_name);
 CREATE INDEX IF NOT EXISTS idx_outputs_gathered ON report_outputs(gathered_at);
 """
 
+_RUN_INDEXES = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outputs_run_id
+    ON report_outputs(run_id) WHERE run_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outputs_inflight
+    ON report_outputs(report_name) WHERE status = 'gathering';
+"""
+
 _MIGRATIONS = (
     ("report_definitions", "timezone", "TEXT NOT NULL DEFAULT 'UTC'"),
     ("report_definitions", "last_fired_at", "TEXT"),
+    ("report_outputs", "run_id", "TEXT"),
+    ("report_outputs", "trigger", "TEXT"),
+    ("report_outputs", "finished_at", "TEXT"),
+    ("report_outputs", "detail", "TEXT"),
+)
+
+_SQL_LATEST_OUTPUT = (
+    "SELECT id, report_name, run_id, trigger, gathered_at, finished_at, "
+    "window_start, window_end, payload, status, gatherer_run_ref, detail "
+    "FROM report_outputs WHERE report_name = ? AND status IN ('ready', 'compiled') "
+    "ORDER BY gathered_at DESC, id DESC LIMIT 1"
+)
+_SQL_OUTPUT_ON_DATE = (
+    "SELECT id, report_name, run_id, trigger, gathered_at, finished_at, "
+    "window_start, window_end, payload, status, gatherer_run_ref, detail "
+    "FROM report_outputs WHERE report_name = ? AND status IN ('ready', 'compiled') "
+    "AND date(gathered_at) = date(?) ORDER BY gathered_at DESC, id DESC LIMIT 1"
+)
+_SQL_OUTPUT_BY_ID = (
+    "SELECT id, report_name, run_id, trigger, gathered_at, finished_at, "
+    "window_start, window_end, payload, status, gatherer_run_ref, detail "
+    "FROM report_outputs WHERE id = ?"
+)
+_SQL_OUTPUT_BY_RUN_ID = (
+    "SELECT id, report_name, run_id, trigger, gathered_at, finished_at, "
+    "window_start, window_end, payload, status, gatherer_run_ref, detail "
+    "FROM report_outputs WHERE run_id = ?"
+)
+_SQL_OUTPUT_META_BY_ID = (
+    "SELECT id, report_name, run_id, trigger, gathered_at, finished_at, "
+    "window_start, window_end, status, gatherer_run_ref, detail, "
+    "json_array_length(payload) AS finding_count FROM report_outputs WHERE id = ?"
+)
+_SQL_LIST_OUTPUTS_ALL = (
+    "SELECT id, report_name, run_id, trigger, gathered_at, finished_at, "
+    "window_start, window_end, status, gatherer_run_ref, detail, "
+    "json_array_length(payload) AS finding_count FROM report_outputs "
+    "ORDER BY gathered_at DESC, id DESC LIMIT ?"
+)
+_SQL_LIST_OUTPUTS_ONE = (
+    "SELECT id, report_name, run_id, trigger, gathered_at, finished_at, "
+    "window_start, window_end, status, gatherer_run_ref, detail, "
+    "json_array_length(payload) AS finding_count FROM report_outputs "
+    "WHERE report_name = ? ORDER BY gathered_at DESC, id DESC LIMIT ?"
 )
 
 _SELECT_ALL_DEFS = (
@@ -69,7 +133,11 @@ def _configure(conn: sqlite3.Connection) -> None:
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
-    """Create tables if missing and apply column migrations."""
+    """Create tables, apply column migrations, then create run-lifecycle indexes.
+
+    Indexes come last because they reference columns (run_id, status) that the
+    migrations may only just have added to a pre-existing database.
+    """
     conn.executescript(SCHEMA)
     existing_tables = {
         row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -80,6 +148,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    conn.executescript(_RUN_INDEXES)
     conn.commit()
 
 
@@ -202,6 +271,124 @@ def set_last_fired(conn: sqlite3.Connection, name: str, fired_at: str) -> None:
     conn.commit()
 
 
+def _make_run_id(conn: sqlite3.Connection, report_name: str) -> str:
+    """Mint a second-granularity run id, suffixing on same-second collisions."""
+    base = f"{report_name}@{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+    run_id = base
+    suffix = 2
+    while conn.execute(
+        "SELECT 1 FROM report_outputs WHERE run_id = ? LIMIT 1", (run_id,)
+    ).fetchone():
+        run_id = f"{base}-{suffix}"
+        suffix += 1
+    return run_id
+
+
+def _expire_stale_runs(conn: sqlite3.Connection, report_name: str) -> None:
+    """Fail this report's in-flight runs that outlived the lock TTL.
+
+    Releases the per-report lock a dead gatherer would otherwise hold forever.
+    """
+    ttl = get_config().run_lock_ttl_seconds
+    conn.execute(
+        "UPDATE report_outputs SET status = 'failed', finished_at = datetime('now'), "
+        "detail = 'expired: no save within lock TTL' "
+        "WHERE report_name = ? AND status = 'gathering' "
+        "AND gathered_at <= datetime('now', ?)",
+        (report_name, f"-{ttl} seconds"),
+    )
+    conn.commit()
+
+
+def begin_run(
+    report_name: str,
+    trigger: str,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Open a run: write a ``gathering`` row before dispatching a fire.
+
+    Acquires the per-report concurrency lock via the partial unique index. Raises
+    RunInFlightError if a live run for this report already holds the lock. Returns
+    ``{run_id, output_id, report_name, status}``. Guarantees a durable record of
+    the fire even if the gatherer never calls back.
+    """
+    conn = conn or get_db()
+    _expire_stale_runs(conn, report_name)
+    run_id = _make_run_id(conn, report_name)
+    try:
+        cursor = conn.execute(
+            "INSERT INTO report_outputs (report_name, run_id, trigger, payload, status) "
+            "VALUES (?, ?, ?, '[]', 'gathering')",
+            (report_name, run_id, trigger),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        held = conn.execute(
+            "SELECT run_id FROM report_outputs WHERE report_name = ? AND status = 'gathering' "
+            "ORDER BY gathered_at DESC, id DESC LIMIT 1",
+            (report_name,),
+        ).fetchone()
+        raise RunInFlightError(report_name, held["run_id"] if held else None) from exc
+    return {
+        "run_id": run_id,
+        "output_id": cursor.lastrowid or 0,
+        "report_name": report_name,
+        "status": "gathering",
+    }
+
+
+def complete_run(
+    run_id: str,
+    report_name: str,
+    payload: list[dict[str, Any]],
+    window_start: str | None,
+    window_end: str | None,
+    status: str,
+    gatherer_run_ref: str | None,
+) -> dict[str, Any] | None:
+    """Complete an in-flight run: fill its findings and reach a terminal status.
+
+    Updates only a ``gathering`` row whose run_id and report match. Returns the
+    updated output, or None if no such open run exists (unknown or already
+    terminal run_id).
+    """
+    db = get_db()
+    cursor = db.execute(
+        "UPDATE report_outputs SET payload = ?, window_start = ?, window_end = ?, "
+        "status = ?, gatherer_run_ref = ?, finished_at = datetime('now') "
+        "WHERE run_id = ? AND report_name = ? AND status = 'gathering'",
+        (
+            json.dumps(payload),
+            window_start,
+            window_end,
+            status,
+            gatherer_run_ref,
+            run_id,
+            report_name,
+        ),
+    )
+    db.commit()
+    if cursor.rowcount == 0:
+        return None
+    return get_output_by_run_id(run_id)
+
+
+def fail_run(
+    run_id: str,
+    detail: str,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """Mark an in-flight run failed (e.g. callback dispatch failed)."""
+    conn = conn or get_db()
+    conn.execute(
+        "UPDATE report_outputs SET status = 'failed', finished_at = datetime('now'), "
+        "detail = ? WHERE run_id = ? AND status = 'gathering'",
+        (detail, run_id),
+    )
+    conn.commit()
+
+
 def insert_output(
     report_name: str,
     payload: list[dict[str, Any]],
@@ -209,14 +396,24 @@ def insert_output(
     window_end: str | None,
     status: str,
     gatherer_run_ref: str | None,
+    trigger: str = "direct",
 ) -> int:
-    """Persist a gathered output. Returns the new output ID."""
-    return execute(
+    """Persist a completed output directly (no pre-opened run). Returns its ID.
+
+    Stamps a fresh second-granularity run_id so even a direct save is an
+    addressable run. Used by save_output when no run_id is supplied.
+    """
+    db = get_db()
+    run_id = _make_run_id(db, report_name)
+    cursor = db.execute(
         "INSERT INTO report_outputs "
-        "(report_name, payload, window_start, window_end, status, gatherer_run_ref) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "(report_name, run_id, trigger, payload, window_start, window_end, "
+        "status, gatherer_run_ref, finished_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
         (
             report_name,
+            run_id,
+            trigger,
             json.dumps(payload),
             window_start,
             window_end,
@@ -224,59 +421,41 @@ def insert_output(
             gatherer_run_ref,
         ),
     )
+    db.commit()
+    return cursor.lastrowid or 0
 
 
 def get_latest_output(name: str) -> dict[str, Any] | None:
-    """Return the most recent output for a report, or None."""
-    row = query_one(
-        "SELECT id, report_name, gathered_at, window_start, window_end, "
-        "payload, status, gatherer_run_ref FROM report_outputs "
-        "WHERE report_name = ? ORDER BY gathered_at DESC, id DESC LIMIT 1",
-        (name,),
-    )
+    """Return the most recent *readable* output for a report, or None.
+
+    Skips in-flight and failed runs so a compiler only ever reads a completed
+    gather.
+    """
+    row = query_one(_SQL_LATEST_OUTPUT, (name,))
     return _decode_row(row, "payload") if row else None
 
 
 def get_output_on_date(name: str, on_date: str) -> dict[str, Any] | None:
-    """Return the most recent output gathered on a given date (YYYY-MM-DD)."""
-    row = query_one(
-        "SELECT id, report_name, gathered_at, window_start, window_end, "
-        "payload, status, gatherer_run_ref FROM report_outputs "
-        "WHERE report_name = ? AND date(gathered_at) = date(?) "
-        "ORDER BY gathered_at DESC, id DESC LIMIT 1",
-        (name, on_date),
-    )
+    """Return the most recent *readable* output gathered on a date (YYYY-MM-DD)."""
+    row = query_one(_SQL_OUTPUT_ON_DATE, (name, on_date))
     return _decode_row(row, "payload") if row else None
 
 
 def list_outputs(report_name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-    """Return saved-output metadata (no payloads), newest first.
+    """Return saved-run metadata (no payloads), newest first.
 
-    The payload column is deliberately excluded and replaced by a
-    ``finding_count`` so callers can browse the full run history cheaply without
-    pulling every finding into context. Filters to one report when given.
+    This is the run history: one row per run — including in-flight ``gathering``
+    and ``failed`` runs — with a ``finding_count`` in place of the payload so the
+    whole catalog stays cheap to browse. Filters to one report when given.
     """
-    sql = (
-        "SELECT id, report_name, gathered_at, window_start, window_end, status, "
-        "gatherer_run_ref, json_array_length(payload) AS finding_count "
-        "FROM report_outputs"
-    )
-    params: tuple[Any, ...] = ()
     if report_name is not None:
-        sql += " WHERE report_name = ?"
-        params = (report_name,)
-    sql += " ORDER BY gathered_at DESC, id DESC LIMIT ?"
-    return query(sql, (*params, limit))
+        return query(_SQL_LIST_OUTPUTS_ONE, (report_name, limit))
+    return query(_SQL_LIST_OUTPUTS_ALL, (limit,))
 
 
 def get_output_meta(output_id: int) -> dict[str, Any] | None:
     """Return one output's metadata (no payload) by id, or None."""
-    return query_one(
-        "SELECT id, report_name, gathered_at, window_start, window_end, status, "
-        "gatherer_run_ref, json_array_length(payload) AS finding_count "
-        "FROM report_outputs WHERE id = ?",
-        (output_id,),
-    )
+    return query_one(_SQL_OUTPUT_META_BY_ID, (output_id,))
 
 
 def delete_output(output_id: int) -> dict[str, Any] | None:
@@ -319,11 +498,13 @@ def prune_outputs(
 
 def get_output_by_id(output_id: int) -> dict[str, Any] | None:
     """Return a single output by ID, or None."""
-    row = query_one(
-        "SELECT id, report_name, gathered_at, window_start, window_end, "
-        "payload, status, gatherer_run_ref FROM report_outputs WHERE id = ?",
-        (output_id,),
-    )
+    row = query_one(_SQL_OUTPUT_BY_ID, (output_id,))
+    return _decode_row(row, "payload") if row else None
+
+
+def get_output_by_run_id(run_id: str) -> dict[str, Any] | None:
+    """Return a single output by its run_id, or None."""
+    row = query_one(_SQL_OUTPUT_BY_RUN_ID, (run_id,))
     return _decode_row(row, "payload") if row else None
 
 
