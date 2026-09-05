@@ -6,7 +6,13 @@ from .definitions import (
     trigger_report,
     upsert_definition,
 )
-from .outputs import get_output, save_output
+from .outputs import (
+    delete_output,
+    get_output,
+    list_outputs,
+    prune_outputs,
+    save_output,
+)
 
 __all__ = [
     "list_reports",
@@ -15,4 +21,7 @@ __all__ = [
     "trigger_report",
     "save_output",
     "get_output",
+    "list_outputs",
+    "delete_output",
+    "prune_outputs",
 ]

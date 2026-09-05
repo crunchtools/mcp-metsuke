@@ -47,7 +47,7 @@ podman run --rm -v ~/.local/share/mcp-metsuke:/data:Z \
 claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 ```
 
-## Tools (6)
+## Tools (9)
 
 ### Definitions (4)
 
@@ -58,12 +58,15 @@ claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 | `upsert_definition` | Create or update a definition (name, prompt, owner, cron schedule, timezone, sources). |
 | `trigger_report` | Fire a report gather right now, without waiting for its schedule. |
 
-### Outputs (2)
+### Outputs (5)
 
 | Tool | Description |
 |------|-------------|
 | `save_output` | Persist gathered findings for a report (each ideally carrying a source URL). |
 | `get_output` | Read the freshest output (or a specific day's) for compiling a report. |
+| `list_outputs` | Browse the run history — metadata + `finding_count` per saved gather, no payloads. |
+| `delete_output` | Delete one saved output by id. |
+| `prune_outputs` | Bulk-prune a report's outputs — keep the N newest, or drop those before a date. |
 
 ## Environment Variables
 

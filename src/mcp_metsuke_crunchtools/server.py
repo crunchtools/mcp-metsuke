@@ -7,17 +7,23 @@ from typing import Any
 from fastmcp import FastMCP
 
 from .models import (
+    DeleteOutputParams,
     GetOutputParams,
     GetSpecParams,
+    ListOutputsParams,
+    PruneOutputsParams,
     SaveOutputParams,
     Status,
     TriggerReportParams,
     UpsertDefinitionParams,
 )
 from .tools import (
+    delete_output,
     get_output,
     get_spec,
+    list_outputs,
     list_reports,
+    prune_outputs,
     save_output,
     trigger_report,
     upsert_definition,
@@ -25,7 +31,7 @@ from .tools import (
 
 mcp = FastMCP(
     "mcp-metsuke-crunchtools",
-    version="0.3.1",
+    version="0.4.0",
     instructions=(
         "Stateful reports catalog with a built-in scheduler. Metsuke stores "
         "report DEFINITIONS (what to gather, which agent owns the gather, and "
@@ -183,3 +189,62 @@ async def get_output_tool(
     """
     params = GetOutputParams(name=name, gathered_date=gathered_date)
     return await get_output(params.name, params.gathered_date)
+
+
+@mcp.tool()
+async def list_outputs_tool(
+    report_name: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List saved report outputs (the run history), newest first.
+
+    Returns one lightweight row per saved gather — id, report_name, gathered_at,
+    reporting window, status, and a finding_count — but NOT the payloads, so the
+    full history stays cheap to browse. Use get_output_tool to pull one run's
+    findings, and delete_output_tool / prune_outputs_tool to prune.
+
+    Args:
+        report_name: Optional report to filter to; None lists across all reports
+        limit: Max rows to return, newest first (default 50, max 500)
+    """
+    params = ListOutputsParams(report_name=report_name, limit=limit)
+    return await list_outputs(params.report_name, params.limit)
+
+
+@mcp.tool()
+async def delete_output_tool(output_id: int) -> dict[str, Any]:
+    """Delete one saved report output by id.
+
+    Returns the deleted output's metadata (with deleted=True). Find ids with
+    list_outputs_tool. Raises if no output carries that id.
+
+    Args:
+        output_id: The id of the output to delete (from list_outputs_tool)
+    """
+    params = DeleteOutputParams(output_id=output_id)
+    return await delete_output(params.output_id)
+
+
+@mcp.tool()
+async def prune_outputs_tool(
+    report_name: str,
+    keep_last: int | None = None,
+    before_date: str | None = None,
+) -> dict[str, Any]:
+    """Bulk-prune a report's saved outputs. Returns the count and ids deleted.
+
+    Give exactly one criterion: keep_last retains the N most recent outputs and
+    deletes the rest (keep_last=0 deletes them all); before_date deletes every
+    output gathered strictly before that date.
+
+    Args:
+        report_name: The report whose outputs to prune
+        keep_last: Retain this many newest outputs, delete older ones
+        before_date: Delete outputs gathered before this date (YYYY-MM-DD)
+    """
+    params = PruneOutputsParams(
+        report_name=report_name,
+        keep_last=keep_last,
+        before_date=before_date,
+    )
+    return await prune_outputs(params.report_name, params.keep_last, params.before_date)

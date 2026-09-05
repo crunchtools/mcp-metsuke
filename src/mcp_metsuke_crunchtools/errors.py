@@ -24,6 +24,13 @@ class OutputNotFoundError(MetsukeError):
             super().__init__(f"No output found for report: {name}")
 
 
+class OutputIdNotFoundError(MetsukeError):
+    """Raised when no gathered output exists for a given output id."""
+
+    def __init__(self, output_id: int) -> None:
+        super().__init__(f"No output found with id: {output_id}")
+
+
 class CallbackNotConfiguredError(MetsukeError):
     """Raised when a report fire is requested but no callback target is set."""
 

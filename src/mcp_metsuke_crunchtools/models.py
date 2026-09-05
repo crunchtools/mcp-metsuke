@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 MAX_NAME_LENGTH = 200
 MAX_PROMPT_LENGTH = 20000
@@ -14,8 +15,19 @@ MAX_TEXT_LENGTH = 2000
 MAX_SCHEDULE_LENGTH = 100
 MAX_TZ_LENGTH = 64
 MAX_PAYLOAD_ITEMS = 2000
+DEFAULT_LIST_LIMIT = 50
+MAX_LIST_LIMIT = 500
 
 Status = Literal["gathering", "ready", "compiled"]
+
+
+def _is_iso_date(value: str) -> bool:
+    """True when value is a valid YYYY-MM-DD calendar date."""
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 class GetSpecParams(BaseModel, extra="forbid"):
@@ -77,3 +89,41 @@ class GetOutputParams(BaseModel, extra="forbid"):
 
     name: str = Field(..., min_length=1, max_length=MAX_NAME_LENGTH)
     gathered_date: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
+
+
+class ListOutputsParams(BaseModel, extra="forbid"):
+    """Parameters for browsing saved-output metadata (no payloads)."""
+
+    report_name: str | None = Field(default=None, min_length=1, max_length=MAX_NAME_LENGTH)
+    limit: int = Field(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT)
+
+
+class DeleteOutputParams(BaseModel, extra="forbid"):
+    """Parameters for deleting one saved output by id."""
+
+    output_id: int = Field(..., ge=1)
+
+
+class PruneOutputsParams(BaseModel, extra="forbid"):
+    """Parameters for bulk-pruning a report's saved outputs.
+
+    Exactly one of ``keep_last`` (retain the N newest) or ``before_date``
+    (drop everything gathered before that date) must be given.
+    """
+
+    report_name: str = Field(..., min_length=1, max_length=MAX_NAME_LENGTH)
+    keep_last: int | None = Field(default=None, ge=0)
+    before_date: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
+
+    @field_validator("before_date")
+    @classmethod
+    def _check_before_date(cls, value: str | None) -> str | None:
+        if value and not _is_iso_date(value):
+            raise ValueError(f"before_date must be YYYY-MM-DD, got: {value!r}")
+        return value
+
+    @model_validator(mode="after")
+    def _exactly_one_criterion(self) -> PruneOutputsParams:
+        if (self.keep_last is None) == (self.before_date is None):
+            raise ValueError("provide exactly one of keep_last or before_date")
+        return self

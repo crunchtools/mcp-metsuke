@@ -11,6 +11,7 @@ from mcp_metsuke_crunchtools import scheduler
 from mcp_metsuke_crunchtools.errors import (
     CallbackNotConfiguredError,
     DefinitionNotFoundError,
+    OutputIdNotFoundError,
     OutputNotFoundError,
 )
 from mcp_metsuke_crunchtools.server import mcp
@@ -21,14 +22,17 @@ from mcp_metsuke_crunchtools.tools.definitions import (
     upsert_definition,
 )
 from mcp_metsuke_crunchtools.tools.outputs import (
+    delete_output,
     get_output,
+    list_outputs,
+    prune_outputs,
     save_output,
 )
 
 if TYPE_CHECKING:
     import sqlite3
 
-EXPECTED_TOOL_COUNT = 6
+EXPECTED_TOOL_COUNT = 9
 
 SAMPLE_PAYLOAD = [
     {"claim": "Shipped RHEL 11 beta", "source": "https://issues.redhat.com/browse/RHEL-1"},
@@ -207,3 +211,79 @@ class TestOutputTools:
         await save_output("core-platform-status", SAMPLE_PAYLOAD)
         with pytest.raises(OutputNotFoundError):
             await get_output("core-platform-status", gathered_date="1999-01-01")
+
+
+class TestOutputHistoryTools:
+    @pytest.fixture(autouse=True)
+    async def _seed_definitions(self, in_memory_db: sqlite3.Connection) -> None:
+        await upsert_definition("core-platform-status", "gather it")
+        await upsert_definition("weekend-report", "gather it too")
+
+    @pytest.mark.asyncio
+    async def test_list_outputs_excludes_payload(self) -> None:
+        await save_output("core-platform-status", SAMPLE_PAYLOAD)
+        rows = await list_outputs("core-platform-status")
+        assert len(rows) == 1
+        assert "payload" not in rows[0]
+        assert rows[0]["finding_count"] == len(SAMPLE_PAYLOAD)
+
+    @pytest.mark.asyncio
+    async def test_list_outputs_newest_first_and_limit(self) -> None:
+        for _ in range(3):
+            await save_output("core-platform-status", SAMPLE_PAYLOAD)
+        rows = await list_outputs("core-platform-status", limit=2)
+        assert len(rows) == 2
+        assert rows[0]["id"] > rows[1]["id"]
+
+    @pytest.mark.asyncio
+    async def test_list_outputs_filters_by_report(self) -> None:
+        await save_output("core-platform-status", SAMPLE_PAYLOAD)
+        await save_output("weekend-report", SAMPLE_PAYLOAD)
+        assert len(await list_outputs("core-platform-status")) == 1
+        assert len(await list_outputs()) == 2
+
+    @pytest.mark.asyncio
+    async def test_list_outputs_unknown_report(self) -> None:
+        with pytest.raises(DefinitionNotFoundError):
+            await list_outputs("nope")
+
+    @pytest.mark.asyncio
+    async def test_delete_output(self) -> None:
+        saved = await save_output("core-platform-status", SAMPLE_PAYLOAD)
+        deleted = await delete_output(saved["id"])
+        assert deleted["deleted"] is True
+        assert deleted["id"] == saved["id"]
+        assert await list_outputs("core-platform-status") == []
+
+    @pytest.mark.asyncio
+    async def test_delete_output_missing(self) -> None:
+        with pytest.raises(OutputIdNotFoundError):
+            await delete_output(9999)
+
+    @pytest.mark.asyncio
+    async def test_prune_keep_last(self) -> None:
+        for _ in range(4):
+            await save_output("core-platform-status", SAMPLE_PAYLOAD)
+        result = await prune_outputs("core-platform-status", keep_last=1)
+        assert result["deleted_count"] == 3
+        assert len(await list_outputs("core-platform-status")) == 1
+
+    @pytest.mark.asyncio
+    async def test_prune_keep_last_zero_deletes_all(self) -> None:
+        await save_output("core-platform-status", SAMPLE_PAYLOAD)
+        result = await prune_outputs("core-platform-status", keep_last=0)
+        assert result["deleted_count"] == 1
+        assert await list_outputs("core-platform-status") == []
+
+    @pytest.mark.asyncio
+    async def test_prune_before_date(self) -> None:
+        await save_output("core-platform-status", SAMPLE_PAYLOAD)
+        future = "2999-01-01"
+        result = await prune_outputs("core-platform-status", before_date=future)
+        assert result["deleted_count"] == 1
+        assert await list_outputs("core-platform-status") == []
+
+    @pytest.mark.asyncio
+    async def test_prune_unknown_report(self) -> None:
+        with pytest.raises(DefinitionNotFoundError):
+            await prune_outputs("nope", keep_last=1)

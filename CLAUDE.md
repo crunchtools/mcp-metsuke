@@ -21,7 +21,7 @@ uv run mcp-metsuke-crunchtools --transport streamable-http --port 8009
 - `METSUKE_SCHEDULER_POLL_SECONDS` — poll interval (default: `60`).
 - `METSUKE_SCHEDULER_ENABLED` — force the scheduler on/off; defaults to on when the callback is configured.
 
-## Tools (6)
+## Tools (9)
 
 ### Definitions (4)
 - `list_reports_tool` — list all report definitions (each with its next fire time)
@@ -29,9 +29,12 @@ uv run mcp-metsuke-crunchtools --transport streamable-http --port 8009
 - `upsert_definition_tool` — create/update a definition (cron schedule + timezone)
 - `trigger_report_tool` — fire a report gather now, without waiting for its schedule
 
-### Outputs (2)
+### Outputs (5)
 - `save_output_tool` — gatherer writes findings here
 - `get_output_tool` — compiler reads freshest (or by-date) output
+- `list_outputs_tool` — browse the run history (metadata + finding_count, no payloads)
+- `delete_output_tool` — delete one saved output by id
+- `prune_outputs_tool` — bulk-prune a report's outputs (keep N newest, or drop before a date)
 
 ## Development
 

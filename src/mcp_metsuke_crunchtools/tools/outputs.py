@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from .. import database as db
-from ..errors import DefinitionNotFoundError, OutputNotFoundError
+from ..errors import (
+    DefinitionNotFoundError,
+    OutputIdNotFoundError,
+    OutputNotFoundError,
+)
 
 
 async def save_output(
@@ -52,3 +56,50 @@ async def get_output(
     if output is None:
         raise OutputNotFoundError(name, gathered_date)
     return output
+
+
+async def list_outputs(
+    report_name: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List saved-output metadata (no payloads), newest first.
+
+    This is the run history: one row per saved gather, with a ``finding_count``
+    instead of the payload so the whole catalog stays cheap to browse. Filters
+    to one report when given. Raises DefinitionNotFoundError if a report_name
+    filter names an unknown report.
+    """
+    if report_name is not None and db.get_definition(report_name) is None:
+        raise DefinitionNotFoundError(report_name)
+    return db.list_outputs(report_name, limit)
+
+
+async def delete_output(output_id: int) -> dict[str, Any]:
+    """Delete one saved output by id. Returns the deleted output's metadata.
+
+    Raises OutputIdNotFoundError if no output carries that id.
+    """
+    deleted = db.delete_output(output_id)
+    if deleted is None:
+        raise OutputIdNotFoundError(output_id)
+    return {**deleted, "deleted": True}
+
+
+async def prune_outputs(
+    report_name: str,
+    keep_last: int | None = None,
+    before_date: str | None = None,
+) -> dict[str, Any]:
+    """Bulk-delete a report's outputs, keeping the N newest or dropping those
+    gathered before a date. Returns the count and ids deleted.
+
+    Raises DefinitionNotFoundError if the report is unknown.
+    """
+    if db.get_definition(report_name) is None:
+        raise DefinitionNotFoundError(report_name)
+    deleted_ids = db.prune_outputs(report_name, keep_last, before_date)
+    return {
+        "report_name": report_name,
+        "deleted_count": len(deleted_ids),
+        "deleted_ids": deleted_ids,
+    }

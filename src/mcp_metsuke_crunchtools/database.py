@@ -249,6 +249,74 @@ def get_output_on_date(name: str, on_date: str) -> dict[str, Any] | None:
     return _decode_row(row, "payload") if row else None
 
 
+def list_outputs(report_name: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """Return saved-output metadata (no payloads), newest first.
+
+    The payload column is deliberately excluded and replaced by a
+    ``finding_count`` so callers can browse the full run history cheaply without
+    pulling every finding into context. Filters to one report when given.
+    """
+    sql = (
+        "SELECT id, report_name, gathered_at, window_start, window_end, status, "
+        "gatherer_run_ref, json_array_length(payload) AS finding_count "
+        "FROM report_outputs"
+    )
+    params: tuple[Any, ...] = ()
+    if report_name is not None:
+        sql += " WHERE report_name = ?"
+        params = (report_name,)
+    sql += " ORDER BY gathered_at DESC, id DESC LIMIT ?"
+    return query(sql, (*params, limit))
+
+
+def get_output_meta(output_id: int) -> dict[str, Any] | None:
+    """Return one output's metadata (no payload) by id, or None."""
+    return query_one(
+        "SELECT id, report_name, gathered_at, window_start, window_end, status, "
+        "gatherer_run_ref, json_array_length(payload) AS finding_count "
+        "FROM report_outputs WHERE id = ?",
+        (output_id,),
+    )
+
+
+def delete_output(output_id: int) -> dict[str, Any] | None:
+    """Delete one output by id. Returns its metadata if it existed, else None."""
+    meta = get_output_meta(output_id)
+    if meta is None:
+        return None
+    execute("DELETE FROM report_outputs WHERE id = ?", (output_id,))
+    return meta
+
+
+def prune_outputs(
+    report_name: str,
+    keep_last: int | None = None,
+    before_date: str | None = None,
+) -> list[int]:
+    """Bulk-delete a report's outputs, returning the deleted ids (newest first).
+
+    Exactly one criterion applies (the tool layer enforces this): ``keep_last``
+    retains the N most recent outputs and deletes the rest; ``before_date``
+    deletes every output gathered strictly before that date (YYYY-MM-DD).
+    """
+    if keep_last is not None:
+        rows = query(
+            "SELECT id FROM report_outputs WHERE report_name = ? "
+            "ORDER BY gathered_at DESC, id DESC LIMIT -1 OFFSET ?",
+            (report_name, keep_last),
+        )
+    else:
+        rows = query(
+            "SELECT id FROM report_outputs WHERE report_name = ? "
+            "AND date(gathered_at) < date(?) ORDER BY gathered_at DESC, id DESC",
+            (report_name, before_date),
+        )
+    ids = [row["id"] for row in rows]
+    for output_id in ids:
+        execute("DELETE FROM report_outputs WHERE id = ?", (output_id,))
+    return ids
+
+
 def get_output_by_id(output_id: int) -> dict[str, Any] | None:
     """Return a single output by ID, or None."""
     row = query_one(
