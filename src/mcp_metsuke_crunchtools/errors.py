@@ -31,6 +31,28 @@ class OutputIdNotFoundError(MetsukeError):
         super().__init__(f"No output found with id: {output_id}")
 
 
+class RunInFlightError(MetsukeError):
+    """Raised when a report is fired while one of its runs is still in flight.
+
+    The per-report concurrency lock permits at most one open run per report.
+    """
+
+    def __init__(self, name: str, run_id: str | None = None) -> None:
+        held = f" (run {run_id})" if run_id else ""
+        super().__init__(
+            f"Report '{name}' already has a run in flight{held}; not starting a concurrent run."
+        )
+
+
+class RunNotFoundError(MetsukeError):
+    """Raised when save_output names a run_id with no open (gathering) run."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(
+            f"No in-flight run found for run_id: {run_id} (unknown, already completed, or expired)"
+        )
+
+
 class CallbackNotConfiguredError(MetsukeError):
     """Raised when a report fire is requested but no callback target is set."""
 

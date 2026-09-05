@@ -10,6 +10,7 @@ from pydantic import SecretStr
 _config: Config | None = None
 
 DEFAULT_POLL_SECONDS = 60
+DEFAULT_RUN_LOCK_TTL_SECONDS = 1800
 
 
 class Config:
@@ -36,6 +37,13 @@ class Config:
             )
         except ValueError:
             self.scheduler_poll_seconds = DEFAULT_POLL_SECONDS
+
+        try:
+            self.run_lock_ttl_seconds: int = int(
+                _read_env("METSUKE_RUN_LOCK_TTL_SECONDS", str(DEFAULT_RUN_LOCK_TTL_SECONDS))
+            )
+        except ValueError:
+            self.run_lock_ttl_seconds = DEFAULT_RUN_LOCK_TTL_SECONDS
 
         self._scheduler_enabled_override: bool | None = _read_bool("METSUKE_SCHEDULER_ENABLED")
 

@@ -21,7 +21,7 @@ from croniter import croniter
 
 from . import database as db
 from .config import Config, get_config
-from .errors import CallbackDispatchError, CallbackNotConfiguredError
+from .errors import CallbackDispatchError, CallbackNotConfiguredError, RunInFlightError
 
 if TYPE_CHECKING:
     import sqlite3
@@ -48,25 +48,34 @@ def next_fire_at(schedule: str | None, tzname: str, base: datetime | None = None
     return nxt.isoformat()
 
 
-async def _post_alert(client: httpx.AsyncClient, cfg: Config, name: str) -> int:
-    """POST the gather callback to the Trentina alert endpoint. Returns status."""
+async def _post_alert(
+    client: httpx.AsyncClient, cfg: Config, name: str, run_id: str | None = None
+) -> int:
+    """POST the gather callback to the Trentina alert endpoint. Returns status.
+
+    The body carries the run_id so the gatherer echoes it back into save_output,
+    completing the exact run that this fire opened.
+    """
     token = cfg.alert_token
     if not (cfg.trentina_alert_url and token):
         raise CallbackNotConfiguredError
     url = f"{cfg.trentina_alert_url}/alert/{token.get_secret_value()}"
+    body: dict[str, str] = {"report": name}
+    if run_id is not None:
+        body["run_id"] = run_id
     try:
-        resp = await client.post(url, json={"report": name}, timeout=_HTTP_TIMEOUT)
+        resp = await client.post(url, json=body, timeout=_HTTP_TIMEOUT)
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise CallbackDispatchError(name, str(exc)) from exc
     return resp.status_code
 
 
-async def trigger_now(name: str) -> int:
+async def trigger_now(name: str, run_id: str | None = None) -> int:
     """Fire a report gather immediately (the manual, API-driven path)."""
     cfg = get_config()
     async with httpx.AsyncClient() as client:
-        return await _post_alert(client, cfg, name)
+        return await _post_alert(client, cfg, name, run_id)
 
 
 def _is_due(schedule: str, tzname: str, last_fired_at: str | None, started_at: datetime) -> bool:
@@ -106,10 +115,17 @@ async def _tick(
         if not due:
             continue
         try:
-            code = await _post_alert(client, cfg, name)
+            run = db.begin_run(name, "scheduled", conn=conn)
+        except RunInFlightError:
+            logger.warning("skipping scheduled report '%s' — a run is already in flight", name)
+            continue
+        run_id = run["run_id"]
+        try:
+            code = await _post_alert(client, cfg, name, run_id)
             db.set_last_fired(conn, name, datetime.now(UTC).isoformat())
-            logger.info("fired scheduled report '%s' -> HTTP %s", name, code)
+            logger.info("fired scheduled report '%s' (run %s) -> HTTP %s", name, run_id, code)
         except CallbackDispatchError:
+            db.fail_run(run_id, "callback dispatch failed", conn=conn)
             logger.exception("failed to dispatch scheduled report '%s'", name)
 
 

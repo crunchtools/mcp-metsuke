@@ -14,6 +14,7 @@ run-scoped research caches with a real, queryable store.
 
 - **Definitions + outputs** — separate what-to-gather from what-was-gathered
 - **Built-in scheduler** — Metsuke fires each definition's gather when its cron schedule comes due, or on demand via `trigger_report` — no external timer
+- **Run lifecycle** — every fire opens a durable *run* with a second-granularity `run_id`: a provisional row is recorded before the callback (a fire is never lost), and a per-report concurrency lock keeps two gathers from racing
 - **Cited findings** — payloads carry per-finding source URLs for one-click checking
 - **Re-homeable gathering** — `owner_agent` makes the gatherer identity data, not code
 - **Local-first** — plain SQLite (WAL), no external services, no per-seat fees
@@ -62,7 +63,7 @@ claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 
 | Tool | Description |
 |------|-------------|
-| `save_output` | Persist gathered findings for a report (each ideally carrying a source URL). |
+| `save_output` | Complete a run by persisting its gathered findings (pass the `run_id` from the fire callback; each finding ideally carrying a source URL). |
 | `get_output` | Read the freshest output (or a specific day's) for compiling a report. |
 | `list_outputs` | Browse the run history — metadata + `finding_count` per saved gather, no payloads. |
 | `delete_output` | Delete one saved output by id. |
@@ -79,13 +80,14 @@ claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 | `METSUKE_ALERT_TOKEN_FILE` | (none) | Path whose contents override `METSUKE_ALERT_TOKEN` (container secret-file convention) |
 | `METSUKE_SCHEDULER_POLL_SECONDS` | `60` | How often the scheduler checks for due reports |
 | `METSUKE_SCHEDULER_ENABLED` | (auto) | Force the scheduler on/off; defaults to on when the callback is configured |
+| `METSUKE_RUN_LOCK_TTL_SECONDS` | `1800` | How long an in-flight run holds the per-report lock before it is expired (self-heals a dead gatherer) |
 
 The scheduler runs only under the `sse` and `streamable-http` transports (the long-lived production processes), never under `stdio`.
 
 ## Data Model
 
 - **report_definitions** — `name` (PK), `gather_prompt`, `owner_agent`, `schedule` (cron), `timezone` (IANA), `source_config` (JSON), `last_fired_at`, `updated_at`
-- **report_outputs** — `id`, `report_name` (FK), `gathered_at`, `window_start`/`window_end`, `payload` (JSON findings with source URLs), `status` (`gathering`/`ready`/`compiled`), `gatherer_run_ref`
+- **report_outputs** (one row per run) — `id`, `report_name` (FK), `run_id` (second-granularity identity), `trigger` (`scheduled`/`manual`/`direct`), `gathered_at`, `finished_at`, `window_start`/`window_end`, `payload` (JSON findings with source URLs), `status` (`gathering`/`ready`/`compiled`/`failed`), `gatherer_run_ref`, `detail`. A partial unique index on `(report_name) WHERE status='gathering'` is the per-report concurrency lock.
 
 ## MCP Registry
 

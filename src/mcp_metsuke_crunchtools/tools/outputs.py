@@ -9,6 +9,7 @@ from ..errors import (
     DefinitionNotFoundError,
     OutputIdNotFoundError,
     OutputNotFoundError,
+    RunNotFoundError,
 )
 
 
@@ -19,15 +20,31 @@ async def save_output(
     window_end: str | None = None,
     status: str = "ready",
     gatherer_run_ref: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Persist a gathered report output.
 
     The gatherer writes findings here after sweeping the sources. Each finding
     in ``payload`` should carry its own source URL so the compiler can cite it.
-    Raises DefinitionNotFoundError if the report is unknown.
+
+    When ``run_id`` is given (the run was opened by trigger/scheduler), this
+    completes that in-flight run in place — filling its findings and reaching a
+    terminal status — so a fired report leaves exactly one row. Without a
+    ``run_id`` it inserts a fresh, identity-stamped completed run (direct save).
+
+    Raises DefinitionNotFoundError if the report is unknown, or RunNotFoundError
+    if ``run_id`` names no open run for this report.
     """
     if db.get_definition(report_name) is None:
         raise DefinitionNotFoundError(report_name)
+
+    if run_id is not None:
+        completed = db.complete_run(
+            run_id, report_name, payload, window_start, window_end, status, gatherer_run_ref
+        )
+        if completed is None:
+            raise RunNotFoundError(run_id)
+        return completed
 
     output_id = db.insert_output(
         report_name, payload, window_start, window_end, status, gatherer_run_ref

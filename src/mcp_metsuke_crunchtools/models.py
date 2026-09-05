@@ -18,7 +18,7 @@ MAX_PAYLOAD_ITEMS = 2000
 DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 500
 
-Status = Literal["gathering", "ready", "compiled"]
+Status = Literal["gathering", "ready", "compiled", "failed"]
 
 
 def _is_iso_date(value: str) -> bool:
@@ -82,6 +82,7 @@ class SaveOutputParams(BaseModel, extra="forbid"):
     window_end: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
     status: Status = Field(default="ready")
     gatherer_run_ref: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
+    run_id: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
 
 
 class GetOutputParams(BaseModel, extra="forbid"):

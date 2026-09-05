@@ -151,11 +151,16 @@ class TestTriggerReport:
         monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient())
         await upsert_definition("core-platform-status", "gather it")
         result = await trigger_report("core-platform-status")
-        assert result == {
-            "report": "core-platform-status",
-            "dispatched": True,
-            "status_code": 200,
-        }
+        assert result["report"] == "core-platform-status"
+        assert result["dispatched"] is True
+        assert result["status_code"] == 200
+        assert result["run_id"].startswith("core-platform-status@")
+
+        rows = await list_outputs("core-platform-status")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "gathering"
+        assert rows[0]["run_id"] == result["run_id"]
+        assert rows[0]["trigger"] == "manual"
 
 
 class TestOutputTools:

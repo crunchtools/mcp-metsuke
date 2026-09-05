@@ -7,7 +7,11 @@ from typing import Any
 from .. import database as db
 from .. import scheduler
 from ..config import get_config
-from ..errors import CallbackNotConfiguredError, DefinitionNotFoundError
+from ..errors import (
+    CallbackDispatchError,
+    CallbackNotConfiguredError,
+    DefinitionNotFoundError,
+)
 
 
 async def list_reports() -> list[dict[str, Any]]:
@@ -53,14 +57,22 @@ async def upsert_definition(
 async def trigger_report(name: str) -> dict[str, Any]:
     """Fire a report gather now via the Trentina alert callback.
 
-    Verifies the definition exists and the callback is configured, then POSTs
-    the gather trigger. Raises DefinitionNotFoundError or
-    CallbackNotConfiguredError. Callback dispatch failures raise
-    CallbackDispatchError.
+    Verifies the definition exists and the callback is configured, opens a run
+    (guaranteed-save provisional row + per-report concurrency lock), then POSTs the
+    gather trigger with the run's ``run_id`` so the gatherer completes that same
+    run via save_output. Raises DefinitionNotFoundError,
+    CallbackNotConfiguredError, or RunInFlightError (a run is already in flight).
+    A dispatch failure marks the run failed and raises CallbackDispatchError.
     """
     if db.get_definition(name) is None:
         raise DefinitionNotFoundError(name)
     if not get_config().callback_configured:
         raise CallbackNotConfiguredError
-    status_code = await scheduler.trigger_now(name)
-    return {"report": name, "dispatched": True, "status_code": status_code}
+    run = db.begin_run(name, "manual")
+    run_id = run["run_id"]
+    try:
+        status_code = await scheduler.trigger_now(name, run_id)
+    except CallbackDispatchError:
+        db.fail_run(run_id, "callback dispatch failed")
+        raise
+    return {"report": name, "run_id": run_id, "dispatched": True, "status_code": status_code}
