@@ -74,9 +74,14 @@ Two partial indexes (created after the column migrations):
 - **complete_run** (`save_output` with `run_id`): fill payload/window/status and
   set `finished_at` on the matching `gathering` row. Unknown/already-terminal
   `run_id` → `RunNotFoundError`.
-- **direct save** (`save_output` without `run_id`): insert a completed row with a
-  freshly minted `run_id` and `trigger="direct"` — the pre-existing behavior,
-  now also identity-stamped. Backward compatible.
+- **direct save** (`save_output` without `run_id`): if a run for this report is
+  still in flight (a gatherer that completed but did not echo its `run_id`),
+  **adopt** that open run — complete it in place, keeping its `run_id` and
+  original `trigger` — so the concurrency lock is released rather than orphaned
+  until TTL, and the fire leaves exactly one row. Only when no run is in flight
+  does this insert a completed row with a freshly minted `run_id` and
+  `trigger="direct"` (the pre-existing behavior, now also identity-stamped).
+  Backward compatible. (Added in 0.5.1.)
 - **expiry**: a `gathering` row older than `METSUKE_RUN_LOCK_TTL_SECONDS` is
   marked `failed` (`detail="expired: no save within lock TTL"`) the next time its
   report is fired, releasing the lock. This self-heals a dead gatherer.

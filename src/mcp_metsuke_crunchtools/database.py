@@ -374,6 +374,22 @@ def complete_run(
     return get_output_by_run_id(run_id)
 
 
+def get_inflight_run_id(report_name: str, conn: sqlite3.Connection | None = None) -> str | None:
+    """Return the run_id of this report's in-flight (``gathering``) run, or None.
+
+    There is at most one such run (the partial unique index enforces it), so this
+    unambiguously names the open run a run_id-less ``save_output`` should adopt
+    rather than orphaning the per-report lock.
+    """
+    conn = conn or get_db()
+    row = conn.execute(
+        "SELECT run_id FROM report_outputs WHERE report_name = ? AND status = 'gathering' "
+        "ORDER BY gathered_at DESC, id DESC LIMIT 1",
+        (report_name,),
+    ).fetchone()
+    return row["run_id"] if row else None
+
+
 def fail_run(
     run_id: str,
     detail: str,
