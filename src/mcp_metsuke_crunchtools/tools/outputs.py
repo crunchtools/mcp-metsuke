@@ -33,8 +33,9 @@ async def save_output(
     ``run_id``, if a run for this report is still in flight (a gatherer that
     completed but forgot to echo its run_id), that open run is adopted and
     completed so the per-report lock is released instead of orphaned until its
-    TTL; otherwise a fresh, identity-stamped completed run is inserted (direct
-    save).
+    TTL, which would otherwise block re-fires; if that adopted run vanishes by
+    racing its own TTL expiry, this falls through to a direct save. Otherwise a
+    fresh, identity-stamped completed run is inserted (direct save).
 
     Raises DefinitionNotFoundError if the report is unknown, or RunNotFoundError
     if an explicit ``run_id`` names no open run for this report.
@@ -42,10 +43,6 @@ async def save_output(
     if db.get_definition(report_name) is None:
         raise DefinitionNotFoundError(report_name)
 
-    # Self-heal: a gatherer that finishes without echoing its run_id would leave
-    # the in-flight placeholder open, holding the concurrency lock until TTL and
-    # blocking re-fires. Adopt that open run so even a run_id-less save releases
-    # the lock and leaves exactly one row per fire.
     adopted = False
     if run_id is None:
         run_id = db.get_inflight_run_id(report_name)
@@ -59,7 +56,6 @@ async def save_output(
             return completed
         if not adopted:
             raise RunNotFoundError(run_id)
-        # Adopted run vanished (raced its TTL expiry) — fall through to a direct save.
 
     output_id = db.insert_output(
         report_name, payload, window_start, window_end, status, gatherer_run_ref
