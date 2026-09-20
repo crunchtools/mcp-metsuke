@@ -1,134 +1,30 @@
-[[exceptions]]
-check = "summary_litter"
-path = "CLAUDE.md"
-justification = "Claude Code project instructions for AI assistant orientation"
 
 [[exceptions]]
-check = "primitive_obsession"
-path = "src/mcp_metsuke_crunchtools/database.py"
-justification = "SQLite schema constants and vector dimensions are standard well-known values"
-
-[[exceptions]]
-check = "primitive_obsession"
+check = "CH006-primitive_obsession"
 path = "src/mcp_metsuke_crunchtools/__init__.py"
 justification = "Port 8020 is the assigned HTTP port for this MCP server"
+classification = "by_design"
 
 [[exceptions]]
-check = "primitive_obsession"
-path = "src/mcp_metsuke_crunchtools/config.py"
-justification = "Default chunk size (1000) and overlap (200) are standard text chunking values"
-
-[[exceptions]]
-check = "primitive_obsession"
-path = "src/mcp_metsuke_crunchtools/indexer.py"
-justification = "File size limits and hash buffer sizes are standard well-known constants"
-
-[[exceptions]]
-check = "lint_suppression"
-path = "src/mcp_metsuke_crunchtools/config.py"
-justification = "SecretStr TYPE_CHECKING import required by MCP Server constitution profile"
-
-[[exceptions]]
-check = "single_use_helpers"
-path = "src/mcp_metsuke_crunchtools/extractor.py"
-justification = "Dispatcher pattern: extract_text() dispatches to _extract_pdf, _extract_docx, _extract_image, _extract_video, _extract_text_file by file type. Each handles a distinct format with different library imports. Inlining would create a 200+ line function mixing pymupdf4llm, python-docx, PIL, and vision imports."
-
-[[exceptions]]
-check = "single_use_helpers"
-path = "src/mcp_metsuke_crunchtools/config.py"
-justification = "Config parsing helpers _parse_paths and _parse_exclude separate parsing logic from __init__; _default_vision_model maps backend names to model defaults."
-
-[[exceptions]]
-check = "single_use_helpers"
-path = "tests/conftest.py"
-justification = "Test fixture helper _mock_embedding generates deterministic vectors used by _mock_embed_texts; test boundary code."
-
-[[exceptions]]
-check = "lint_suppression"
-path = "src/mcp_metsuke_crunchtools/extractor.py"
-justification = "PIL EXIF returns untyped IFD values; type: ignore on cast_dms is required to convert object to tuple for float extraction."
-
-[[exceptions]]
-check = "lint_suppression"
+check = "EV001-lint_suppression"
 path = "tests/test_validation.py"
 justification = "type: ignore[call-arg] used to deliberately test that extra fields are rejected by pydantic models."
+classification = "by_design"
 
 [[exceptions]]
-check = "primitive_obsession"
-path = "src/mcp_metsuke_crunchtools/extractor.py"
-justification = "EXIF tag IDs (36867, 271, 272, 256, 257, 0x8825) are standardized TIFF/EXIF constants defined by the EXIF specification."
-
-[[exceptions]]
-check = "primitive_obsession"
-path = "src/mcp_metsuke_crunchtools/vision.py"
-justification = "HTTP timeout (120s) for Ollama local API and max_tokens (300) for OpenAI are standard API call parameters."
-
-[[exceptions]]
-check = "test_skip_evasion"
-path = "tests/test_indexer.py"
-justification = "test_scan_skips_large_files is skipped on CI because creating a 100MB temp file is slow and unreliable in constrained environments."
-
-[[exceptions]]
-check = "redundant_error_handling"
-path = "src/mcp_metsuke_crunchtools/extractor.py"
-justification = "ExtractionError wrapping in _extract_pdf and _extract_docx converts library-specific exceptions (pymupdf, docx) into the unified MetsukeError hierarchy for consistent error handling upstream."
-
-[[exceptions]]
-check = "verbose_comments"
-path = "src/mcp_metsuke_crunchtools/extractor.py"
-justification = "Docstrings on public functions (extract_text, detect_file_type, is_supported) are required for MCP tool discoverability."
-
-[[exceptions]]
-check = "verbose_comments"
-path = "src/mcp_metsuke_crunchtools/server.py"
-justification = "Section separator comments (Search Tools, Index Management, Status Tools) provide navigation in a 150-line tool registration file."
-
-[[exceptions]]
-check = "verbose_comments"
-path = "src/mcp_metsuke_crunchtools/vision.py"
-justification = "Docstring on get_backend() describes the singleton behavior and None return semantics."
-
-[[exceptions]]
-check = "verbose_comments"
-path = "tests/test_indexer.py"
-justification = "Test docstrings describe test intent for non-obvious assertions."
-
-[[exceptions]]
-check = "verbose_comments"
-path = "tests/test_vision.py"
-justification = "Test docstrings describe test intent for non-obvious assertions."
-
-[[exceptions]]
-check = "generic_names"
-path = "src/mcp_metsuke_crunchtools/__init__.py"
-justification = "Variable 'result' holds argparse.parse_args() return — standard argparse idiom."
-
-[[exceptions]]
-check = "primitive_obsession"
-path = "tests/conftest.py"
-justification = "10000 modulo seed for deterministic mock embeddings — test fixture constant."
-
-[[exceptions]]
-check = "summary_litter"
-path = "SESSION-CONTEXT.md"
-justification = "Claude Code session context file, not committed to repository."
-
-[[exceptions]]
-check = "single_use_helpers"
-path = "src/mcp_metsuke_crunchtools/indexer.py"
-justification = "_store_one is called from both index_file (sync) and index_path_async (concurrent loop). _partition_unchanged separates DB-safe checksum checks from thread-unsafe extraction for the async pipeline."
-
-[[exceptions]]
-check = "verbose_comments"
-path = "src/mcp_metsuke_crunchtools/indexer.py"
-justification = "Phase comments (Phase 1b, Phase 2) document the concurrent pipeline stages for the async indexer."
-
-[[exceptions]]
-check = "lint_suppression"
-path = "src/mcp_metsuke_crunchtools/database.py"
-justification = "noqa: S608 on query_errors() f-string SQL — WHERE clause is built from hardcoded strings only, all user values are bound via params tuple."
-
-[[exceptions]]
-check = "copy_paste_detection"
+check = "CH012-copy_paste_detection"
 path = "src/mcp_metsuke_crunchtools/database.py"
 justification = "query, query_one and execute share a two-line connection-and-cursor setup and then diverge: all rows, first row or None, and lastrowid after commit. Three distinct operations, not duplicated logic."
+classification = "by_design"
+
+[[exceptions]]
+check = "DB002-unsafe_sql_construction"
+path = "src/mcp_metsuke_crunchtools/database.py"
+justification = "The f-string in _init_schema's ALTER TABLE statement interpolates table, column and ddl, but all three values come exclusively from the module-level constant tuple _MIGRATIONS (defined earlier in this same file, nine hardcoded entries) -- never from user input, request parameters, or any external source. SQLite's `?` parameter binding covers values, not identifiers (table/column names cannot be parameterized in SQL at all, by any driver), so this is the only way to express a conditional ALTER TABLE ... ADD COLUMN. Not a SQL injection vector: there is no path from external input to this string. Previously triaged; not exploitable."
+classification = "by_design"
+
+[[exceptions]]
+check = "EV002-manifest_lint_suppression"
+path = "pyproject.toml"
+justification = "Each remaining global ruff ignore was verified against this codebase with the project's own pinned toolchain (`uv run ruff check --select <RULE>`, ignore list temporarily cleared for an unmasked read) before being kept: TRY003 (database.py, models.py -- SQLite/validation error messages), PLR0913/PLR0917 (4 src/ files -- database.py, server.py, tools/definitions.py, tools/outputs.py -- MCP tool signatures mirror the wire API and genuinely take many named/positional parameters), PLW0603 (config.py + database.py, module-level lazy singletons), PLC0415 (4 sites in __init__.py -- deliberate lazy imports so the CLI only pulls in the scheduler, database, and server modules when the corresponding code path actually runs), TID252 (tools/definitions.py, tools/outputs.py, this package's own internal relative imports). Two previously-global entries with zero hits anywhere (PIE790, S105) were dropped, and one fixable outright (RUF022: one unsorted `__all__` in tools/__init__.py) was resolved with `ruff check --fix` instead of kept ignored. S101 (assert), PLR2004 (magic numbers in test assertions -- this repo has zero src/ hits for it, unlike some sibling repos), and ARG002 (unused mock-callback arguments) were moved from the global ignore into `[tool.ruff.lint.per-file-ignores]` for tests/* -- all three fire only in tests/, never in src/."
+classification = "by_design"
