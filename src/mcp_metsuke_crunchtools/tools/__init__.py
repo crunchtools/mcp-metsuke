@@ -15,13 +15,13 @@ from .outputs import (
 )
 
 __all__ = [
-    "list_reports",
-    "get_spec",
-    "upsert_definition",
-    "trigger_report",
-    "save_output",
-    "get_output",
-    "list_outputs",
     "delete_output",
+    "get_output",
+    "get_spec",
+    "list_outputs",
+    "list_reports",
     "prune_outputs",
+    "save_output",
+    "trigger_report",
+    "upsert_definition",
 ]
