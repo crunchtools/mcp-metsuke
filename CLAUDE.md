@@ -55,13 +55,14 @@ podman build -f Containerfile . # Container
 - `tools/` — pure async functions (definitions, outputs)
 - `server.py` — thin `@mcp.tool()` wrappers that validate then delegate
 
-## Role in the fleet
+## Report Lifecycle
 
-Metsuke replaces the RT-comment research cache. Metsuke's built-in scheduler
-fires each definition when its cron schedule comes due (or on demand via
-`trigger_report`) by POSTing the callback to the Trentina alert endpoint, which
-HMAC-signs and forwards it to the owning gatherer. That gatherer (Kagetora
-today; re-homeable via `owner_agent`) reads a definition with `get_spec`, sweeps
-the sources, and writes findings with `save_output`. The compiler (Josui) reads
-the freshest output with `get_output` to draft a cited weekly status email.
-Surfaces through Trentina as `mcp__trentina__metsuke__*`.
+The built-in scheduler fires each definition when its cron schedule comes due
+(or on demand via `trigger_report`) by POSTing a callback to the alert
+endpoint configured in `TRENTINA_ALERT_URL`, which forwards it to whichever
+agent owns that definition's `owner_agent` field. That agent reads the
+definition with `get_spec`, sweeps the sources, and writes findings with
+`save_output`. A downstream consumer reads the freshest output with
+`get_output` — e.g. to compile a status summary. Which agents fill the
+gatherer/compiler roles, and how the callback endpoint is exposed to them, is
+the deployment's decision, not this server's.
