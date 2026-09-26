@@ -292,3 +292,52 @@ class TestOutputHistoryTools:
     async def test_prune_unknown_report(self) -> None:
         with pytest.raises(DefinitionNotFoundError):
             await prune_outputs("nope", keep_last=1)
+
+
+class TestSaveOutputToolWiring:
+    @pytest.mark.asyncio
+    async def test_forwards_findings_and_unset_optionals(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # RT #1505: what the tool hands storage after validation, not just the model.
+        from mcp_metsuke_crunchtools import server
+
+        captured: dict[str, object] = {}
+
+        async def fake_save_output(*args: object) -> dict[str, object]:
+            captured["args"] = args
+            return {"ok": True}
+
+        monkeypatch.setattr(server, "save_output", fake_save_output)
+        tool = await server.mcp.get_tool("save_output_tool")
+        await tool.fn(
+            report_name="weekend-report",
+            payload=[{"summary": "s", "source_url": "https://e", "theme": None}],
+            window_start="",
+            window_end="2026-09-26",
+            gatherer_run_ref=" ",
+            run_id="",
+        )
+        assert captured["args"] == (
+            "weekend-report",
+            [{"summary": "s", "source_url": "https://e", "theme": None}],
+            None,
+            "2026-09-26",
+            "ready",
+            None,
+            None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_registered_schema_declares_finding_fields(self) -> None:
+        # What a tool-calling model actually sees over MCP.
+        from mcp_metsuke_crunchtools import server
+
+        tool = await server.mcp.get_tool("save_output_tool")
+        schema = tool.parameters
+        assert schema["properties"]["payload"]["items"] == {"$ref": "#/$defs/Finding"}
+        finding = schema["$defs"]["Finding"]
+        assert finding["required"] == ["summary"]
+        assert finding["additionalProperties"] is False
+        assert {"summary", "source_url", "section", "theme", "actors"} <= set(finding["properties"])
+        assert all("description" in prop for prop in finding["properties"].values())

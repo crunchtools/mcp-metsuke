@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
@@ -73,16 +73,110 @@ class TriggerReportParams(BaseModel, extra="forbid"):
     name: str = Field(..., min_length=1, max_length=MAX_NAME_LENGTH)
 
 
+class Finding(BaseModel, extra="forbid"):
+    """One gathered finding.
+
+    The fields are declared, not left as a free-form dict, because a model
+    calling the tool fills in what the schema names: with a bare ``object``
+    item, strict tool-calling models emitted ``{}`` for every finding (RT #1505).
+    ``summary`` is the one field every report uses and the one a finding is
+    worthless without. The rest are the keys the live reports use; a report
+    that needs one more adds it here.
+
+    Example::
+
+        {"summary": "Fedora 45 Beta shipped with Podman 6.",
+         "source_url": "https://fedoramagazine.org/...",
+         "section": "rss-news-roundup", "theme": "RHEL/Linux"}
+    """
+
+    summary: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_TEXT_LENGTH,
+        description="One or two sentences stating the finding itself.",
+    )
+    source_url: str | None = Field(
+        default=None,
+        max_length=MAX_TEXT_LENGTH,
+        description="Clickable link to the evidence; null when no source exists.",
+    )
+    section: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="Report section this belongs in, as named by the report's gather prompt.",
+    )
+    theme: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="Grouping within a section, e.g. 'Security' or 'AI/Agentic'.",
+    )
+    title: str | None = Field(
+        default=None,
+        max_length=MAX_TEXT_LENGTH,
+        description="Headline of the source item, when it has one.",
+    )
+    category: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="Source category, e.g. the feed category the item came from.",
+    )
+    source_type: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="Kind of source, e.g. 'jira', 'slack', 'email', 'rss', 'web'.",
+    )
+    date: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="When it happened, ISO date (YYYY-MM-DD).",
+    )
+    actors: list[Annotated[str, Field(max_length=MAX_NAME_LENGTH)]] | None = Field(
+        default=None,
+        max_length=MAX_PAYLOAD_ITEMS,
+        description="People or teams involved, by name.",
+    )
+    outcome_ref: str | None = Field(
+        default=None,
+        max_length=MAX_TEXT_LENGTH,
+        description="Tracker key this finding advances, e.g. a Jira issue key.",
+    )
+
+    @field_validator("summary")
+    @classmethod
+    def _check_summary(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("finding summary must not be blank")
+        return value
+
+
 class SaveOutputParams(BaseModel, extra="forbid"):
     """Parameters for persisting a gathered report output."""
 
     report_name: str = Field(..., min_length=1, max_length=MAX_NAME_LENGTH)
-    payload: list[dict[str, Any]] = Field(..., max_length=MAX_PAYLOAD_ITEMS)
+    payload: list[Finding] = Field(..., max_length=MAX_PAYLOAD_ITEMS)
     window_start: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
     window_end: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
     status: Status = Field(default="ready")
     gatherer_run_ref: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
     run_id: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
+
+    @field_validator("window_start", "window_end", "gatherer_run_ref", "run_id", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: Any) -> Any:
+        """An empty string means "not given".
+
+        Models that fill every optional parameter send ``run_id: ""`` rather
+        than omitting it, which read as a lookup for a run named "" and failed
+        with "No in-flight run found" (RT #1505).
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    def payload_dicts(self) -> list[dict[str, Any]]:
+        """The findings as stored: exactly the keys the caller sent."""
+        return [finding.model_dump(exclude_unset=True) for finding in self.payload]
 
 
 class GetOutputParams(BaseModel, extra="forbid"):
