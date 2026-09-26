@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from mcp_metsuke_crunchtools.models import (
     MAX_NAME_LENGTH,
+    MAX_TEXT_LENGTH,
     GetOutputParams,
     GetSpecParams,
     SaveOutputParams,
@@ -81,6 +82,35 @@ class TestSaveOutputParams:
             report_name="r", payload=[{"summary": "x", "source_url": "http://e"}]
         )
         assert params.status == "ready"
+
+    def test_minimal_finding(self) -> None:
+        params = SaveOutputParams(report_name="r", payload=[{"summary": "x"}])
+        assert params.payload_dicts() == [{"summary": "x"}]
+
+    def test_full_finding(self) -> None:
+        full = {
+            "summary": "s",
+            "source_url": "https://e",
+            "section": "technical",
+            "theme": "AI/Agentic",
+            "title": "t",
+            "category": "c",
+            "source_type": "jira",
+            "date": "2026-09-25",
+            "actors": ["Scott McCarty"],
+            "outcome_ref": "HUM-1",
+        }
+        params = SaveOutputParams(report_name="r", payload=[full])
+        assert params.payload_dicts() == [full]
+
+    def test_overlong_fields_rejected(self) -> None:
+        for bad in (
+            {"summary": "x" * (MAX_TEXT_LENGTH + 1)},
+            {"summary": "x", "section": "y" * (MAX_NAME_LENGTH + 1)},
+            {"summary": "x", "actors": ["z" * (MAX_NAME_LENGTH + 1)]},
+        ):
+            with pytest.raises(ValidationError):
+                SaveOutputParams(report_name="r", payload=[bad])
 
     def test_empty_finding_rejected(self) -> None:
         # The RT #1505 failure: a model emitted [{}, {}] and it was saved as "ready".

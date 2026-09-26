@@ -292,3 +292,38 @@ class TestOutputHistoryTools:
     async def test_prune_unknown_report(self) -> None:
         with pytest.raises(DefinitionNotFoundError):
             await prune_outputs("nope", keep_last=1)
+
+
+class TestSaveOutputToolWiring:
+    @pytest.mark.asyncio
+    async def test_forwards_findings_and_unset_optionals(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # RT #1505: what the tool hands storage after validation, not just the model.
+        from mcp_metsuke_crunchtools import server
+
+        captured: dict[str, object] = {}
+
+        async def fake_save_output(*args: object) -> dict[str, object]:
+            captured["args"] = args
+            return {"ok": True}
+
+        monkeypatch.setattr(server, "save_output", fake_save_output)
+        tool = await server.mcp.get_tool("save_output_tool")
+        await tool.fn(
+            report_name="weekend-report",
+            payload=[{"summary": "s", "source_url": "https://e", "theme": None}],
+            window_start="",
+            window_end="2026-09-26",
+            gatherer_run_ref=" ",
+            run_id="",
+        )
+        assert captured["args"] == (
+            "weekend-report",
+            [{"summary": "s", "source_url": "https://e", "theme": None}],
+            None,
+            "2026-09-26",
+            "ready",
+            None,
+            None,
+        )
