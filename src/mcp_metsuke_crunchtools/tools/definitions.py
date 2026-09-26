@@ -72,7 +72,9 @@ async def trigger_report(name: str) -> dict[str, Any]:
     run = db.begin_run(name, "manual")
     run_id = run["run_id"]
     try:
-        status_code = await scheduler.trigger_now(name, run_id, definition)
+        status_code = await scheduler.trigger_now(
+            name, run_id, scheduler.gather_spec_of(definition)
+        )
     except CallbackDispatchError:
         db.fail_run(run_id, "callback dispatch failed")
         raise

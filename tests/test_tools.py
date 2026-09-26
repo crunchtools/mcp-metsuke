@@ -417,3 +417,7 @@ class TestScheduledCallbackSpec:
         assert cast("str", body["run_id"]).startswith("r@")
         assert body["gather_prompt"] == "the prompt"
         assert json.loads(cast("str", body["source_config"])) == {"k": 1}
+
+    def test_gather_spec_of_picks_callback_fields(self) -> None:
+        row = {"name": "r", "gather_prompt": "p", "source_config": None, "schedule": "x"}
+        assert scheduler.gather_spec_of(row) == {"gather_prompt": "p", "source_config": None}

@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -31,6 +31,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mcp_metsuke.scheduler")
 
 _HTTP_TIMEOUT = 30.0
+
+
+class GatherSpec(TypedDict):
+    """The part of a definition the gather callback carries (RT #1505)."""
+
+    gather_prompt: str
+    source_config: dict[str, Any] | None
+
+
+def gather_spec_of(definition: dict[str, Any]) -> GatherSpec:
+    """Pick the callback fields out of a stored definition row."""
+    return GatherSpec(
+        gather_prompt=definition["gather_prompt"],
+        source_config=definition["source_config"],
+    )
 
 
 def next_fire_at(schedule: str | None, tzname: str, base: datetime | None = None) -> str | None:
@@ -55,7 +70,7 @@ async def _post_alert(
     cfg: Config,
     name: str,
     run_id: str | None = None,
-    spec: dict[str, Any] | None = None,
+    spec: GatherSpec | None = None,
 ) -> int:
     """POST the gather callback to the Trentina alert endpoint. Returns status.
 
@@ -94,9 +109,7 @@ async def _post_alert(
     return resp.status_code
 
 
-async def trigger_now(
-    name: str, run_id: str | None = None, spec: dict[str, Any] | None = None
-) -> int:
+async def trigger_now(name: str, run_id: str | None = None, spec: GatherSpec | None = None) -> int:
     """Fire a report gather immediately (the manual, API-driven path).
 
     Args:
@@ -153,7 +166,9 @@ async def _tick(
             continue
         run_id = run["run_id"]
         try:
-            code = await _post_alert(client, cfg, name, run_id, db.get_gather_spec(conn, name))
+            stored = db.get_gather_spec(conn, name)
+            spec = gather_spec_of(stored) if stored is not None else None
+            code = await _post_alert(client, cfg, name, run_id, spec)
             db.set_last_fired(conn, name, datetime.now(UTC).isoformat())
             logger.info("fired scheduled report '%s' (run %s) -> HTTP %s", name, run_id, code)
         except CallbackDispatchError:
