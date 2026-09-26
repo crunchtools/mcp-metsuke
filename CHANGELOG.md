@@ -8,6 +8,18 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-26
+
+### Changed
+- `save_output_tool` payload items are a typed `Finding` (`summary` required and
+  non-blank; `source_url`, `section`, `theme`, `title`, `category`, `source_type`,
+  `date`, `actors`, `outcome_ref` optional; unknown keys rejected). A bare
+  `object` item schema led strict tool-calling models to save `[{}, {}]` as a
+  "ready" report (RT #1505). Empty findings are now rejected. **Breaking:**
+  payloads without a `summary`, or with keys outside that set, no longer save.
+- Blank `run_id`, `gatherer_run_ref`, `window_start` and `window_end` mean
+  "not given" instead of a lookup for a run named "".
+
 ## [0.5.0] - 2026-09-05
 
 Run lifecycle (Spec 002): a report *run* is now a durable, addressable entity.

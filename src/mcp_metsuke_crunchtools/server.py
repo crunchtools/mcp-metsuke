@@ -8,6 +8,7 @@ from fastmcp import FastMCP
 
 from .models import (
     DeleteOutputParams,
+    Finding,
     GetOutputParams,
     GetSpecParams,
     ListOutputsParams,
@@ -31,7 +32,7 @@ from .tools import (
 
 mcp = FastMCP(
     "mcp-metsuke-crunchtools",
-    version="0.5.1",
+    version="1.0.0",
     instructions=(
         "Stateful reports catalog with a built-in scheduler and run lifecycle. "
         "Metsuke stores report DEFINITIONS (what to gather, which agent owns the "
@@ -138,7 +139,7 @@ async def trigger_report_tool(name: str) -> dict[str, Any]:
 @mcp.tool()
 async def save_output_tool(
     report_name: str,
-    payload: list[dict[str, Any]],
+    payload: list[Finding],
     window_start: str | None = None,
     window_end: str | None = None,
     status: Status = "ready",
@@ -155,7 +156,8 @@ async def save_output_tool(
 
     Args:
         report_name: The report definition this output belongs to
-        payload: List of finding objects, each ideally carrying a source URL
+        payload: List of findings. Each needs a non-empty summary and should
+            carry its source_url; see Finding for the other allowed keys
         window_start: Start of the reporting window (ISO date/datetime)
         window_end: End of the reporting window (ISO date/datetime)
         status: One of "gathering", "ready", "compiled", "failed" (default: "ready")
@@ -173,7 +175,7 @@ async def save_output_tool(
     )
     return await save_output(
         params.report_name,
-        params.payload,
+        params.payload_dicts(),
         params.window_start,
         params.window_end,
         params.status,

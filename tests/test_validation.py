@@ -77,8 +77,49 @@ class TestUpsertDefinitionParams:
 
 class TestSaveOutputParams:
     def test_valid(self) -> None:
-        params = SaveOutputParams(report_name="r", payload=[{"claim": "x", "source": "http://e"}])
+        params = SaveOutputParams(
+            report_name="r", payload=[{"summary": "x", "source_url": "http://e"}]
+        )
         assert params.status == "ready"
+
+    def test_empty_finding_rejected(self) -> None:
+        # The RT #1505 failure: a model emitted [{}, {}] and it was saved as "ready".
+        with pytest.raises(ValidationError):
+            SaveOutputParams(report_name="r", payload=[{}, {}])
+
+    def test_blank_summary_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            SaveOutputParams(report_name="r", payload=[{"summary": "   "}])
+
+    def test_stored_as_sent(self) -> None:
+        sent = {"summary": "x", "theme": None, "outcome_ref": "HUM-1", "actors": ["a"]}
+        params = SaveOutputParams(report_name="r", payload=[sent])
+        assert params.payload_dicts() == [sent]
+
+    def test_unknown_finding_key_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            SaveOutputParams(report_name="r", payload=[{"summary": "x", "priority": 2}])
+
+    def test_blank_optionals_are_unset(self) -> None:
+        params = SaveOutputParams(
+            report_name="r",
+            payload=[],
+            run_id="",
+            gatherer_run_ref=" ",
+            window_start="",
+            window_end="",
+        )
+        assert params.run_id is None
+        assert params.gatherer_run_ref is None
+        assert params.window_start is None
+        assert params.window_end is None
+
+    def test_tool_schema_declares_finding_fields(self) -> None:
+        # What a tool-calling model sees: named properties, summary required.
+        schema = SaveOutputParams.model_json_schema()
+        finding = schema["$defs"]["Finding"]
+        assert finding["required"] == ["summary"]
+        assert {"summary", "source_url", "section", "theme"} <= set(finding["properties"])
 
     def test_bad_status_rejected(self) -> None:
         with pytest.raises(ValidationError):
