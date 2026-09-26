@@ -2,7 +2,8 @@
 
 Metsuke owns its own schedule. A background thread polls the report
 definitions and, when a definition's cron schedule comes due, fires the gather
-callback by POSTing ``{"report": <name>}`` to the Trentina alert endpoint.
+callback by POSTing the report name, run_id and gather spec to the Trentina
+alert endpoint.
 Trentina resolves the profile by alert token, HMAC-signs the body, and forwards
 it to the owning gatherer agent's webhook. Metsuke therefore needs only the
 alert URL and token — never the HMAC secret.
@@ -11,9 +12,10 @@ alert URL and token — never the HMAC secret.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -29,6 +31,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mcp_metsuke.scheduler")
 
 _HTTP_TIMEOUT = 30.0
+
+
+class GatherSpec(TypedDict):
+    """The part of a definition the gather callback carries (RT #1505)."""
+
+    gather_prompt: str
+    source_config: dict[str, Any] | None
+
+
+def gather_spec_of(definition: dict[str, Any]) -> GatherSpec:
+    """Pick the callback fields out of a stored definition row."""
+    return GatherSpec(
+        gather_prompt=definition["gather_prompt"],
+        source_config=definition["source_config"],
+    )
 
 
 def next_fire_at(schedule: str | None, tzname: str, base: datetime | None = None) -> str | None:
@@ -49,12 +66,30 @@ def next_fire_at(schedule: str | None, tzname: str, base: datetime | None = None
 
 
 async def _post_alert(
-    client: httpx.AsyncClient, cfg: Config, name: str, run_id: str | None = None
+    client: httpx.AsyncClient,
+    cfg: Config,
+    name: str,
+    run_id: str | None = None,
+    spec: GatherSpec | None = None,
 ) -> int:
     """POST the gather callback to the Trentina alert endpoint. Returns status.
 
     The body carries the run_id so the gatherer echoes it back into save_output,
-    completing the exact run that this fire opened.
+    completing the exact run that this fire opened. It also carries the gather
+    spec (``gather_prompt``, and ``source_config`` as a JSON string) so the
+    gatherer's instructions arrive with the trigger rather than as a tool result:
+    a tool result is untrusted content to Trentina, and an instruction-heavy spec
+    read that way was refused by the L3 judge often enough to kill gathers
+    (RT #1505). Both are strings because webhook templates render a string whole
+    but truncate structured values.
+
+    Args:
+        client: HTTP client to post with.
+        cfg: Config carrying the alert URL and token.
+        name: Report definition name.
+        run_id: The run this fire opened; omitted from the body when None.
+        spec: ``{"gather_prompt", "source_config"}`` from the definition;
+            omitted from the body when None.
     """
     token = cfg.alert_token
     if not (cfg.trentina_alert_url and token):
@@ -63,6 +98,9 @@ async def _post_alert(
     body: dict[str, str] = {"report": name}
     if run_id is not None:
         body["run_id"] = run_id
+    if spec is not None:
+        body["gather_prompt"] = spec["gather_prompt"]
+        body["source_config"] = json.dumps(spec["source_config"] or {})
     try:
         resp = await client.post(url, json=body, timeout=_HTTP_TIMEOUT)
         resp.raise_for_status()
@@ -71,11 +109,18 @@ async def _post_alert(
     return resp.status_code
 
 
-async def trigger_now(name: str, run_id: str | None = None) -> int:
-    """Fire a report gather immediately (the manual, API-driven path)."""
+async def trigger_now(name: str, run_id: str | None = None, spec: GatherSpec | None = None) -> int:
+    """Fire a report gather immediately (the manual, API-driven path).
+
+    Args:
+        name: Report definition name.
+        run_id: The run this fire opened.
+        spec: The definition's gather_prompt and source_config, sent with the
+            callback so the gatherer does not have to read them back.
+    """
     cfg = get_config()
     async with httpx.AsyncClient() as client:
-        return await _post_alert(client, cfg, name, run_id)
+        return await _post_alert(client, cfg, name, run_id, spec)
 
 
 def _is_due(schedule: str, tzname: str, last_fired_at: str | None, started_at: datetime) -> bool:
@@ -121,7 +166,7 @@ async def _tick(
             continue
         run_id = run["run_id"]
         try:
-            code = await _post_alert(client, cfg, name, run_id)
+            code = await _post_alert(client, cfg, name, run_id, gather_spec_of(row))
             db.set_last_fired(conn, name, datetime.now(UTC).isoformat())
             logger.info("fired scheduled report '%s' (run %s) -> HTTP %s", name, run_id, code)
         except CallbackDispatchError:

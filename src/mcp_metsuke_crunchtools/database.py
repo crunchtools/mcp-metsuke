@@ -256,10 +256,10 @@ def upsert_definition(
 def list_scheduled(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return definitions that carry a schedule (for the scheduler thread)."""
     cursor = conn.execute(
-        "SELECT name, schedule, timezone, last_fired_at FROM report_definitions "
-        "WHERE schedule IS NOT NULL AND schedule != ''"
+        "SELECT name, schedule, timezone, last_fired_at, gather_prompt, source_config "
+        "FROM report_definitions WHERE schedule IS NOT NULL AND schedule != ''"
     )
-    return [dict(row) for row in cursor.fetchall()]
+    return [_decode_row(row, "source_config") for row in cursor.fetchall()]
 
 
 def set_last_fired(conn: sqlite3.Connection, name: str, fired_at: str) -> None:

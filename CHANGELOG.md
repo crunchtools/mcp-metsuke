@@ -8,6 +8,16 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-26
+
+### Added
+- The gather callback carries the definition's `gather_prompt` and
+  `source_config` (as a JSON string) alongside `report` and `run_id`, on both
+  the scheduled and the manual path. The gatherer gets its instructions with
+  the trigger instead of reading them back through `get_spec_tool`, where
+  Trentina judges them as untrusted content; an instruction-heavy spec was
+  refused by the L3 judge often enough to kill gathers (RT #1505).
+
 ## [1.0.0] - 2026-09-26
 
 ### Changed
