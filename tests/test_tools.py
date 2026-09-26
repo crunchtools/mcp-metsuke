@@ -327,3 +327,16 @@ class TestSaveOutputToolWiring:
             None,
             None,
         )
+
+    @pytest.mark.asyncio
+    async def test_registered_schema_declares_finding_fields(self) -> None:
+        # What a tool-calling model actually sees over MCP.
+        from mcp_metsuke_crunchtools import server
+
+        tool = await server.mcp.get_tool("save_output_tool")
+        schema = tool.parameters
+        assert schema["properties"]["payload"]["items"] == {"$ref": "#/$defs/Finding"}
+        finding = schema["$defs"]["Finding"]
+        assert finding["required"] == ["summary"]
+        assert finding["additionalProperties"] is False
+        assert {"summary", "source_url", "section", "theme", "actors"} <= set(finding["properties"])
