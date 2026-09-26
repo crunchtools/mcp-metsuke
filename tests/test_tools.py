@@ -340,3 +340,4 @@ class TestSaveOutputToolWiring:
         assert finding["required"] == ["summary"]
         assert finding["additionalProperties"] is False
         assert {"summary", "source_url", "section", "theme", "actors"} <= set(finding["properties"])
+        assert all("description" in prop for prop in finding["properties"].values())

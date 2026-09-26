@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from mcp_metsuke_crunchtools.models import (
     MAX_NAME_LENGTH,
+    MAX_PAYLOAD_ITEMS,
     MAX_TEXT_LENGTH,
     GetOutputParams,
     GetSpecParams,
@@ -111,6 +112,15 @@ class TestSaveOutputParams:
         ):
             with pytest.raises(ValidationError):
                 SaveOutputParams(report_name="r", payload=[bad])
+
+    def test_actors_list_bound(self) -> None:
+        at_limit = {"summary": "x", "actors": ["a"] * MAX_PAYLOAD_ITEMS}
+        SaveOutputParams(report_name="r", payload=[at_limit])
+        with pytest.raises(ValidationError):
+            SaveOutputParams(
+                report_name="r",
+                payload=[{"summary": "x", "actors": ["a"] * (MAX_PAYLOAD_ITEMS + 1)}],
+            )
 
     def test_empty_finding_rejected(self) -> None:
         # The RT #1505 failure: a model emitted [{}, {}] and it was saved as "ready".

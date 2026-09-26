@@ -82,20 +82,65 @@ class Finding(BaseModel, extra="forbid"):
     ``summary`` is the one field every report uses and the one a finding is
     worthless without. The rest are the keys the live reports use; a report
     that needs one more adds it here.
+
+    Example::
+
+        {"summary": "Fedora 45 Beta shipped with Podman 6.",
+         "source_url": "https://fedoramagazine.org/...",
+         "section": "rss-news-roundup", "theme": "RHEL/Linux"}
     """
 
-    summary: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
-    source_url: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
-    section: str | None = Field(default=None, max_length=MAX_NAME_LENGTH)
-    theme: str | None = Field(default=None, max_length=MAX_NAME_LENGTH)
-    title: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
-    category: str | None = Field(default=None, max_length=MAX_NAME_LENGTH)
-    source_type: str | None = Field(default=None, max_length=MAX_NAME_LENGTH)
-    date: str | None = Field(default=None, max_length=MAX_NAME_LENGTH)
-    actors: list[Annotated[str, Field(max_length=MAX_NAME_LENGTH)]] | None = Field(
-        default=None, max_length=MAX_PAYLOAD_ITEMS
+    summary: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_TEXT_LENGTH,
+        description="One or two sentences stating the finding itself.",
     )
-    outcome_ref: str | None = Field(default=None, max_length=MAX_TEXT_LENGTH)
+    source_url: str | None = Field(
+        default=None,
+        max_length=MAX_TEXT_LENGTH,
+        description="Clickable link to the evidence; null when no source exists.",
+    )
+    section: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="Report section this belongs in, as named by the report's gather prompt.",
+    )
+    theme: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="Grouping within a section, e.g. 'Security' or 'AI/Agentic'.",
+    )
+    title: str | None = Field(
+        default=None,
+        max_length=MAX_TEXT_LENGTH,
+        description="Headline of the source item, when it has one.",
+    )
+    category: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="Source category, e.g. the feed category the item came from.",
+    )
+    source_type: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="Kind of source, e.g. 'jira', 'slack', 'email', 'rss', 'web'.",
+    )
+    date: str | None = Field(
+        default=None,
+        max_length=MAX_NAME_LENGTH,
+        description="When it happened, ISO date (YYYY-MM-DD).",
+    )
+    actors: list[Annotated[str, Field(max_length=MAX_NAME_LENGTH)]] | None = Field(
+        default=None,
+        max_length=MAX_PAYLOAD_ITEMS,
+        description="People or teams involved, by name.",
+    )
+    outcome_ref: str | None = Field(
+        default=None,
+        max_length=MAX_TEXT_LENGTH,
+        description="Tracker key this finding advances, e.g. a Jira issue key.",
+    )
 
     @field_validator("summary")
     @classmethod
