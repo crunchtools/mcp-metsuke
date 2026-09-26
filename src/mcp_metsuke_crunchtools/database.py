@@ -262,6 +262,24 @@ def list_scheduled(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(row) for row in cursor.fetchall()]
 
 
+def get_gather_spec(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
+    """Return a definition's gather_prompt and source_config, or None.
+
+    Args:
+        conn: The scheduler thread's own connection.
+        name: The report definition name.
+
+    Returns:
+        ``{"gather_prompt": str, "source_config": dict | None}``, or None when
+        no definition has that name.
+    """
+    row = conn.execute(
+        "SELECT gather_prompt, source_config FROM report_definitions WHERE name = ?",
+        (name,),
+    ).fetchone()
+    return _decode_row(row, "source_config") if row else None
+
+
 def set_last_fired(conn: sqlite3.Connection, name: str, fired_at: str) -> None:
     """Record the last time the scheduler fired a report (dedup across polls)."""
     conn.execute(

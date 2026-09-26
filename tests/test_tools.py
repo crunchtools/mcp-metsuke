@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import json
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar, cast
 
 import pytest
 
@@ -31,6 +33,8 @@ from mcp_metsuke_crunchtools.tools.outputs import (
 
 if TYPE_CHECKING:
     import sqlite3
+
+    import httpx
 
 EXPECTED_TOOL_COUNT = 9
 
@@ -114,6 +118,8 @@ class _FakeResponse:
 
 
 class _FakeClient:
+    posted: ClassVar[list[dict[str, object]]] = []
+
     async def __aenter__(self) -> _FakeClient:
         return self
 
@@ -121,6 +127,7 @@ class _FakeClient:
         return False
 
     async def post(self, url: str, json: dict[str, object], timeout: float) -> _FakeResponse:
+        _FakeClient.posted.append(json)
         return _FakeResponse()
 
 
@@ -161,6 +168,24 @@ class TestTriggerReport:
         assert rows[0]["status"] == "gathering"
         assert rows[0]["run_id"] == result["run_id"]
         assert rows[0]["trigger"] == "manual"
+
+    @pytest.mark.asyncio
+    async def test_trigger_carries_spec_and_run_id(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # RT #1505: the spec rides with the trigger, as strings, with the run_id.
+        monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
+        monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
+        config_mod._config = None
+        monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient())
+        _FakeClient.posted.clear()
+        await upsert_definition("weekend-report", "gather it", source_config={"window_days": 7})
+        result = await trigger_report("weekend-report")
+        body = _FakeClient.posted[-1]
+        assert body["report"] == "weekend-report"
+        assert body["run_id"] == result["run_id"]
+        assert body["gather_prompt"] == "gather it"
+        assert json.loads(cast("str", body["source_config"])) == {"window_days": 7}
 
 
 class TestOutputTools:
@@ -341,3 +366,54 @@ class TestSaveOutputToolWiring:
         assert finding["additionalProperties"] is False
         assert {"summary", "source_url", "section", "theme", "actors"} <= set(finding["properties"])
         assert all("description" in prop for prop in finding["properties"].values())
+
+
+class TestScheduledCallbackSpec:
+    def test_get_gather_spec(self, in_memory_db: sqlite3.Connection) -> None:
+        from mcp_metsuke_crunchtools import database as db
+
+        db.upsert_definition("r", "the prompt", "kagetora", "0 9 * * 6", "UTC", {"k": 1})
+        assert db.get_gather_spec(in_memory_db, "r") == {
+            "gather_prompt": "the prompt",
+            "source_config": {"k": 1},
+        }
+        assert db.get_gather_spec(in_memory_db, "missing") is None
+
+    @pytest.mark.asyncio
+    async def test_post_alert_without_spec_is_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
+        monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
+        config_mod._config = None
+        _FakeClient.posted.clear()
+        client = _FakeClient()
+        await scheduler._post_alert(
+            cast("httpx.AsyncClient", client), config_mod.get_config(), "r", "r@1"
+        )
+        assert _FakeClient.posted[-1] == {"report": "r", "run_id": "r@1"}
+
+    @pytest.mark.asyncio
+    async def test_scheduled_tick_sends_spec(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The automated path, not just the manual trigger.
+        from mcp_metsuke_crunchtools import database as db
+
+        monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
+        monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
+        config_mod._config = None
+        monkeypatch.setattr(scheduler, "_is_due", lambda *_a: True)
+        db.upsert_definition("r", "the prompt", "kagetora", "0 9 * * 6", "UTC", {"k": 1})
+        _FakeClient.posted.clear()
+        await scheduler._tick(
+            in_memory_db,
+            config_mod.get_config(),
+            cast("httpx.AsyncClient", _FakeClient()),
+            datetime.now(UTC),
+        )
+        body = _FakeClient.posted[-1]
+        assert body["report"] == "r"
+        assert cast("str", body["run_id"]).startswith("r@")
+        assert body["gather_prompt"] == "the prompt"
+        assert json.loads(cast("str", body["source_config"])) == {"k": 1}

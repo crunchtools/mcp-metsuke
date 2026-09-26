@@ -64,14 +64,15 @@ async def trigger_report(name: str) -> dict[str, Any]:
     CallbackNotConfiguredError, or RunInFlightError (a run is already in flight).
     A dispatch failure marks the run failed and raises CallbackDispatchError.
     """
-    if db.get_definition(name) is None:
+    definition = db.get_definition(name)
+    if definition is None:
         raise DefinitionNotFoundError(name)
     if not get_config().callback_configured:
         raise CallbackNotConfiguredError
     run = db.begin_run(name, "manual")
     run_id = run["run_id"]
     try:
-        status_code = await scheduler.trigger_now(name, run_id)
+        status_code = await scheduler.trigger_now(name, run_id, definition)
     except CallbackDispatchError:
         db.fail_run(run_id, "callback dispatch failed")
         raise
