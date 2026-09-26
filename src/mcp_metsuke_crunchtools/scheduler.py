@@ -166,9 +166,7 @@ async def _tick(
             continue
         run_id = run["run_id"]
         try:
-            stored = db.get_gather_spec(conn, name)
-            spec = gather_spec_of(stored) if stored is not None else None
-            code = await _post_alert(client, cfg, name, run_id, spec)
+            code = await _post_alert(client, cfg, name, run_id, gather_spec_of(row))
             db.set_last_fired(conn, name, datetime.now(UTC).isoformat())
             logger.info("fired scheduled report '%s' (run %s) -> HTTP %s", name, run_id, code)
         except CallbackDispatchError:

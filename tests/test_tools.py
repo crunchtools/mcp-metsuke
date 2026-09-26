@@ -369,15 +369,27 @@ class TestSaveOutputToolWiring:
 
 
 class TestScheduledCallbackSpec:
-    def test_get_gather_spec(self, in_memory_db: sqlite3.Connection) -> None:
+    def test_list_scheduled_carries_spec(self, in_memory_db: sqlite3.Connection) -> None:
         from mcp_metsuke_crunchtools import database as db
 
         db.upsert_definition("r", "the prompt", "kagetora", "0 9 * * 6", "UTC", {"k": 1})
-        assert db.get_gather_spec(in_memory_db, "r") == {
-            "gather_prompt": "the prompt",
-            "source_config": {"k": 1},
-        }
-        assert db.get_gather_spec(in_memory_db, "missing") is None
+        (row,) = db.list_scheduled(in_memory_db)
+        assert row["gather_prompt"] == "the prompt"
+        assert row["source_config"] == {"k": 1}
+
+    @pytest.mark.asyncio
+    async def test_none_source_config_sent_as_empty_object(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
+        monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
+        config_mod._config = None
+        _FakeClient.posted.clear()
+        spec = scheduler.GatherSpec(gather_prompt="p", source_config=None)
+        await scheduler._post_alert(
+            cast("httpx.AsyncClient", _FakeClient()), config_mod.get_config(), "r", "r@1", spec
+        )
+        assert _FakeClient.posted[-1]["source_config"] == "{}"
 
     @pytest.mark.asyncio
     async def test_post_alert_without_spec_is_unchanged(
