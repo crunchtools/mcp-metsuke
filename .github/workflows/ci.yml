@@ -40,8 +40,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build container image
         run: docker build -f Containerfile -t mcp-metsuke:test .
-      - name: Verify container
-        run: timeout 5 docker run --rm mcp-metsuke:test || true
+      - name: Verify container imports the server
+        # Fails the build if the image's resolved dependencies break an import
+        # (1.2.0 crash-looped on deploy while this step, then "|| true", passed).
+        run: docker run --rm --entrypoint /app/venv/bin/python mcp-metsuke:test -c "import mcp_metsuke_crunchtools.server"
 
   validate-constitution:
     name: Constitution Validation
