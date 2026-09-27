@@ -394,7 +394,7 @@ GMAIL_ANALYSES = {
         "message_count": 1,
     },
     "t2": {
-        "last_sender": "Scott <smccarty@redhat.com>",
+        "last_sender": "Ann Lee <ann@redhat.com>",
         "ball_in_court_of": "other",
         "last_timestamp": "2026-09-26T10:00:00+00:00",
     },
