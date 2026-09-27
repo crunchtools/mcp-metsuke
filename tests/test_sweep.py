@@ -228,6 +228,11 @@ class TestResultFromBlocks:
         assert res.flagged
         assert res.json() == {"a": 1}
 
+    def test_flagged_error_withholds_text(self) -> None:
+        res = result_from_blocks(["secret body", "[TRENTINA WARNING] flagged by layer L3"], True)
+        assert res.flagged
+        assert "secret" not in (res.error or "")
+
     def test_error(self) -> None:
         res = result_from_blocks(["[TRENTINA] Refused"], True)
         assert not res.ok
@@ -777,6 +782,7 @@ class TestTrentinaGateway:
             "http://trentina.example.com/mcp",
             "http://8.8.8.8/mcp",
             "http://[2001:4860:4860::8888]/mcp",
+            "http://evil\u3002com/mcp",
             "ftp://x/mcp",
             "http:///mcp",
         ],
@@ -998,6 +1004,7 @@ class TestSweepConcurrencyCap:
             return "ready"
 
         monkeypatch.setattr(scheduler, "sweep_run", slow_sweep_run)
+        monkeypatch.setattr(db, "run_is_open", lambda *_a, **_k: True)
         dispatched = _capture_dispatch(monkeypatch)
         jobs = [
             asyncio.create_task(
@@ -1339,3 +1346,37 @@ class TestEmptyPageWithCursor:
         (record,) = sweep["sections"]["slack"]["records"]
         assert record["thread_complete"] is True
         assert record["state"] == "waiting"
+
+
+class TestExpiredRuns:
+    async def test_run_expired_while_queued_is_not_swept_or_dispatched(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        swept: list[str] = []
+
+        async def fake_sweep_run(run_id: str, *_a: object, **_k: object) -> str:
+            swept.append(run_id)
+            return "ready"
+
+        monkeypatch.setattr(scheduler, "sweep_run", fake_sweep_run)
+        dispatched = _capture_dispatch(monkeypatch)
+        await upsert_definition(name="r", gather_prompt="p")
+        run = db.begin_run("r", "manual")
+        db.fail_run(run["run_id"], "expired: no save within lock TTL")
+        await scheduler.sweep_and_dispatch("r", run["run_id"], {"gather_prompt": "p"})
+        assert swept == []
+        assert dispatched == []
+
+    async def test_run_expired_mid_sweep_is_not_dispatched(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def expiring_sweep_run(run_id: str, *_a: object, **_k: object) -> str:
+            db.fail_run(run_id, "expired: no save within lock TTL")
+            return "ready"
+
+        monkeypatch.setattr(scheduler, "sweep_run", expiring_sweep_run)
+        dispatched = _capture_dispatch(monkeypatch)
+        await upsert_definition(name="r", gather_prompt="p")
+        run = db.begin_run("r", "manual")
+        await scheduler.sweep_and_dispatch("r", run["run_id"], {"gather_prompt": "p"})
+        assert dispatched == []

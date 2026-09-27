@@ -18,6 +18,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
@@ -41,6 +42,8 @@ MAX_ERROR_CHARS = 500
 # What one tool call can fail with once the session is up. Anything else is a
 # bug in Metsuke and should crash loudly rather than be recorded as a source
 # being "unavailable".
+_SERVICE_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
 CALL_FAILURES = (McpError, ClientError, httpx.HTTPError, TimeoutError, ConnectionError)
 
 
@@ -79,8 +82,9 @@ def result_from_blocks(texts: list[str], is_error: bool) -> GatewayResult:
             body.append(text)
     joined = "\n".join(body)
     if is_error:
-        error = joined[:MAX_ERROR_CHARS] or "tool error"
-        return GatewayResult(text="", flagged=flagged, error=error)
+        # A flagged error keeps its status, never its text.
+        error = "tool error (flagged; text withheld)" if flagged else joined[:MAX_ERROR_CHARS]
+        return GatewayResult(text="", flagged=flagged, error=error or "tool error")
     return GatewayResult(text=joined, flagged=flagged)
 
 
@@ -148,7 +152,9 @@ def check_gateway_url(url: str) -> None:
         if address.is_private or address.is_loopback:
             return
         raise ValueError(f"plain-HTTP gateway URL must be internal, got host {host!r}")
-    if host == "localhost" or "." not in host:
+    # Only plain ASCII names qualify as internal: a Unicode dot such as "。"
+    # would otherwise pass as "no dot" and be normalised to "." on the wire.
+    if host == "localhost" or _SERVICE_NAME.fullmatch(host):
         return
     raise ValueError(f"plain-HTTP gateway URL must be internal, got host {host!r}")
 

@@ -202,7 +202,15 @@ async def sweep_and_dispatch(
         # allows one open run per report, so queued sweeps never outnumber
         # swept definitions.
         async with _sweep_slot():
+            if not db.run_is_open(run_id, conn=conn):
+                logger.warning("run %s expired while queued for a sweep; dropped", run_id)
+                return
             status = await sweep_run(run_id, definition.get("source_config"), conn=conn)
+        if not db.run_is_open(run_id, conn=conn):
+            # The lock TTL lapsed mid-sweep, so a newer run may own the report:
+            # dispatching now could produce a duplicate callback.
+            logger.warning("run %s expired during its sweep; not dispatching", run_id)
+            return
         await trigger_now(name, run_id, gather_spec_of(definition), status)
     except CallbackDispatchError as exc:
         db.fail_run(run_id, f"callback dispatch failed: {exc}"[:MAX_DETAIL_CHARS], conn=conn)

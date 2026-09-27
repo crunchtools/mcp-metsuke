@@ -376,6 +376,15 @@ def complete_run(
     return get_output_by_run_id(run_id)
 
 
+def run_is_open(run_id: str, conn: sqlite3.Connection | None = None) -> bool:
+    """True while the run is still ``gathering`` (not completed, failed or expired)."""
+    conn = conn or get_db()
+    row = conn.execute(
+        "SELECT 1 FROM report_outputs WHERE run_id = ? AND status = 'gathering'", (run_id,)
+    ).fetchone()
+    return row is not None
+
+
 def get_inflight_run_id(report_name: str, conn: sqlite3.Connection | None = None) -> str | None:
     """Return the run_id of this report's in-flight (``gathering``) run, or None.
 
