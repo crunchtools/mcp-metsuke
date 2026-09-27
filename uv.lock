@@ -871,7 +871,7 @@ wheels = [
 
 [[package]]
 name = "mcp-metsuke-crunchtools"
-version = "1.2.2"
+version = "1.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },

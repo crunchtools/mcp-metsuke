@@ -8,6 +8,13 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-09-27
+
+### Fixed
+- `gmail_waiting` drops threads whose last message came from the mailbox
+  owner (`dropped_self`): the first live sweep listed the user's own sent
+  reports, which carry no ownership analysis.
+
 ## [1.2.2] - 2026-09-27
 
 ### Fixed

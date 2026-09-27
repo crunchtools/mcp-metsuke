@@ -38,6 +38,7 @@ from mcp_metsuke_crunchtools.sweep.client import (
     connect_gateway,
     result_from_blocks,
 )
+from mcp_metsuke_crunchtools.sweep.collectors import _drop_reason
 from mcp_metsuke_crunchtools.sweep.window import next_weekday, previous_weekday_at
 from mcp_metsuke_crunchtools.tools import (
     get_sweep,
@@ -394,7 +395,7 @@ GMAIL_ANALYSES = {
         "message_count": 1,
     },
     "t2": {
-        "last_sender": "Scott <smccarty@redhat.com>",
+        "last_sender": "Ann Lee <ann@redhat.com>",
         "ball_in_court_of": "other",
         "last_timestamp": "2026-09-26T10:00:00+00:00",
     },
@@ -837,7 +838,15 @@ class TestFlaggedWithheld:
         assert records
         for record in records:
             assert record["flagged"] is True
-            assert all(record[f] is None for f in ("title", "description", "location", "attendees"))
+            withheld = (
+                "title",
+                "description",
+                "location",
+                "organizer",
+                "meeting_link",
+                "attendees",
+            )
+            assert all(record[f] is None for f in withheld)
             assert record["link"]
             assert record["start"]
 
@@ -1445,3 +1454,54 @@ class TestFirstPageFailure:
         assert section["records"] == []
         assert any("conversation C0C4" in e for e in section["errors"])
         assert all("not json" not in e for e in section["errors"])
+
+
+class TestSelfSentMail:
+    async def test_threads_last_sent_by_the_account_are_dropped(self) -> None:
+        analyses = {
+            "s1": {
+                "last_sender": "Scott McCarty <SMcCarty@redhat.com>",
+                "last_timestamp": "2026-09-26T10:00:00+00:00",
+            },
+            "o1": {
+                "last_sender": "Mohan Shash <m@redhat.com>",
+                "ball_in_court_of": "user",
+                "last_timestamp": "2026-09-26T10:00:00+00:00",
+            },
+        }
+        handlers = {
+            "search_gmail_messages": lambda args: _ok("Thread ID: s1\nThread ID: o1\n"),
+            "get_gmail_thread_content": lambda args: _ok(
+                {"content": THREAD_CONTENT, "analysis": analyses[args["thread_id"]]}
+            ),
+        }
+        step = {
+            "section": "email",
+            "collector": "gmail_waiting",
+            "options": {"backend": "gw-work", "account": "smccarty@redhat.com"},
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        section = sweep["sections"]["email"]
+        assert [r["thread_id"] for r in section["records"]] == ["o1"]
+        assert section["stats"]["dropped_self"] == 1
+
+
+class TestDropReason:
+    WINDOW = previous_weekday_at(NOW, TZ)
+
+    @pytest.mark.parametrize(
+        ("sender", "expected"),
+        [
+            ("Scott McCarty <smccarty@redhat.com>", "dropped_self"),
+            ("SMCCARTY@REDHAT.COM", "dropped_self"),
+            ("smccarty@redhat.com", "dropped_self"),
+            ("Mohan Shash <mohan.shash@redhat.com>", None),
+            ("Scott McCarty", None),  # display name only: not provably self
+            ("", None),
+            (None, None),
+        ],
+    )
+    def test_self_detection(self, sender: str | None, expected: str | None) -> None:
+        facts = {"subject": "Hi", "sender": sender, "ball": "user", "last_at": None}
+        assert _drop_reason(facts, self.WINDOW, "smccarty@redhat.com") == expected
