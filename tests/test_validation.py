@@ -8,9 +8,11 @@ from pydantic import ValidationError
 from mcp_metsuke_crunchtools.models import (
     MAX_NAME_LENGTH,
     MAX_PAYLOAD_ITEMS,
+    MAX_SWEEP_PAGE_SIZE,
     MAX_TEXT_LENGTH,
     GetOutputParams,
     GetSpecParams,
+    GetSweepParams,
     SaveOutputParams,
     UpsertDefinitionParams,
 )
@@ -181,3 +183,41 @@ class TestGetOutputParams:
     def test_extra_field_rejected(self) -> None:
         with pytest.raises(ValidationError):
             GetOutputParams(name="r", nope=1)  # type: ignore[call-arg]
+
+
+class TestGetSweepParams:
+    def test_minimal_by_run(self) -> None:
+        params = GetSweepParams(run_id="daily-briefing@20260928T100000Z")
+        assert params.page == 1
+        assert params.page_size == 25
+        assert params.section is None
+
+    def test_full(self) -> None:
+        params = GetSweepParams(
+            run_id="r@1", report_name="r", section="slack", page=2, page_size=50
+        )
+        assert (params.section, params.page, params.page_size) == ("slack", 2, 50)
+
+    def test_needs_run_or_report(self) -> None:
+        with pytest.raises(ValidationError):
+            GetSweepParams()
+
+    def test_empty_strings_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            GetSweepParams(run_id="")
+        with pytest.raises(ValidationError):
+            GetSweepParams(report_name="r", section="")
+
+    def test_too_long_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            GetSweepParams(run_id="x" * (MAX_NAME_LENGTH + 1))
+
+    def test_page_bounds(self) -> None:
+        with pytest.raises(ValidationError):
+            GetSweepParams(report_name="r", page=0)
+        with pytest.raises(ValidationError):
+            GetSweepParams(report_name="r", page_size=MAX_SWEEP_PAGE_SIZE + 1)
+
+    def test_extra_field_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            GetSweepParams(report_name="r", extra="nope")  # type: ignore[call-arg]

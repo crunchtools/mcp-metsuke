@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
     import httpx
 
-EXPECTED_TOOL_COUNT = 9
+EXPECTED_TOOL_COUNT = 10
 
 SAMPLE_PAYLOAD = [
     {"claim": "Shipped RHEL 11 beta", "source": "https://issues.redhat.com/browse/RHEL-1"},

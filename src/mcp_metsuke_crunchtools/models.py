@@ -17,6 +17,8 @@ MAX_TZ_LENGTH = 64
 MAX_PAYLOAD_ITEMS = 2000
 DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 500
+MAX_SWEEP_PAGE_SIZE = 50
+MAX_SWEEP_PAGE = 1000
 
 Status = Literal["gathering", "ready", "compiled", "failed"]
 
@@ -54,6 +56,15 @@ class UpsertDefinitionParams(BaseModel, extra="forbid"):
                 f"schedule must be a valid cron expression (e.g. '0 6 * * 5'), got: {value!r}"
             )
         return value or None
+
+    @field_validator("source_config")
+    @classmethod
+    def _check_sweep(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        # Fail a bad sweep at save time, not at 06:00 when the scheduler fires it.
+        from .sweep import sweep_spec_of
+
+        sweep_spec_of(value)
+        return value
 
     @field_validator("timezone")
     @classmethod
@@ -221,4 +232,20 @@ class PruneOutputsParams(BaseModel, extra="forbid"):
     def _exactly_one_criterion(self) -> PruneOutputsParams:
         if (self.keep_last is None) == (self.before_date is None):
             raise ValueError("provide exactly one of keep_last or before_date")
+        return self
+
+
+class GetSweepParams(BaseModel, extra="forbid"):
+    """Parameters for reading a run's sweep."""
+
+    run_id: str | None = Field(default=None, min_length=1, max_length=MAX_NAME_LENGTH)
+    report_name: str | None = Field(default=None, min_length=1, max_length=MAX_NAME_LENGTH)
+    section: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    page: int = Field(default=1, ge=1, le=MAX_SWEEP_PAGE)
+    page_size: int = Field(default=25, ge=1, le=MAX_SWEEP_PAGE_SIZE)
+
+    @model_validator(mode="after")
+    def _needs_a_run(self) -> GetSweepParams:
+        if self.run_id is None and self.report_name is None:
+            raise ValueError("give run_id or report_name")
         return self

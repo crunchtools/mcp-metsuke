@@ -69,6 +69,8 @@ _MIGRATIONS = (
     ("report_outputs", "trigger", "TEXT"),
     ("report_outputs", "finished_at", "TEXT"),
     ("report_outputs", "detail", "TEXT"),
+    ("report_outputs", "sweep_status", "TEXT"),
+    ("report_outputs", "sweep_data", "TEXT"),
 )
 
 _SQL_LATEST_OUTPUT = (
@@ -403,6 +405,86 @@ def fail_run(
         (detail, run_id),
     )
     conn.commit()
+
+
+def set_sweep(
+    run_id: str,
+    sweep: dict[str, Any],
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """Store a run's sweep document and its overall status."""
+    conn = conn or get_db()
+    conn.execute(
+        "UPDATE report_outputs SET sweep_status = ?, sweep_data = ? WHERE run_id = ?",
+        (sweep.get("status"), json.dumps(sweep), run_id),
+    )
+    conn.commit()
+
+
+def get_sweep_section(run_id: str, section: str) -> dict[str, Any] | None:
+    """One section of a run's sweep, decoded alone (not the whole document).
+
+    The section is matched as a ``json_each`` key, never spliced into a JSON
+    path, so any caller-supplied name is just data.
+    """
+    row = query_one(
+        "SELECT s.value AS section FROM report_outputs o, "
+        "json_each(o.sweep_data, '$.sections') s WHERE o.run_id = ? AND s.key = ?",
+        (run_id, section),
+    )
+    if not row or row["section"] is None:
+        return None
+    decoded: dict[str, Any] = json.loads(row["section"])
+    return decoded
+
+
+def get_sweep_index(run_id: str) -> dict[str, Any] | None:
+    """A run's sweep without its records: computed in SQL, records never decoded."""
+    head = query_one(
+        "SELECT json_extract(sweep_data, '$.status') AS status, "
+        "json_extract(sweep_data, '$.generated_at') AS generated_at, "
+        "json_extract(sweep_data, '$.window') AS window, "
+        "json_extract(sweep_data, '$.errors') AS errors "
+        "FROM report_outputs WHERE run_id = ? AND sweep_data IS NOT NULL",
+        (run_id,),
+    )
+    if head is None:
+        return None
+    rows = query(
+        "SELECT s.key AS name, json_extract(s.value, '$.collector') AS collector, "
+        "json_extract(s.value, '$.status') AS status, "
+        "json_array_length(s.value, '$.records') AS record_count, "
+        "json_extract(s.value, '$.errors') AS errors, "
+        "json_extract(s.value, '$.stats') AS stats "
+        "FROM report_outputs o, json_each(o.sweep_data, '$.sections') s WHERE o.run_id = ?",
+        (run_id,),
+    )
+    return {
+        "status": head["status"],
+        "generated_at": head["generated_at"],
+        "window": json.loads(head["window"]) if head["window"] else None,
+        "errors": json.loads(head["errors"]) if head["errors"] else [],
+        "sections": {
+            r["name"]: {
+                "collector": r["collector"],
+                "status": r["status"],
+                "record_count": r["record_count"] or 0,
+                "errors": json.loads(r["errors"]) if r["errors"] else [],
+                "stats": json.loads(r["stats"]) if r["stats"] else {},
+            }
+            for r in rows
+        },
+    }
+
+
+def latest_sweep_run_id(report_name: str) -> str | None:
+    """The newest run of a report that carries a sweep, in flight or finished."""
+    row = query_one(
+        "SELECT run_id FROM report_outputs WHERE report_name = ? AND sweep_data IS NOT NULL "
+        "ORDER BY gathered_at DESC, id DESC LIMIT 1",
+        (report_name,),
+    )
+    return row["run_id"] if row else None
 
 
 def insert_output(

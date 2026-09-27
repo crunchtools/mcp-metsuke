@@ -131,3 +131,43 @@ async def prune_outputs(
         "deleted_count": len(deleted_ids),
         "deleted_ids": deleted_ids,
     }
+
+
+async def get_sweep(
+    run_id: str | None = None,
+    report_name: str | None = None,
+    section: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> dict[str, Any]:
+    """Read a run's sweep: the index, or one page of one section's records.
+
+    Without ``section`` returns the window, overall status and per-section
+    counts, errors and stats. With ``section`` returns up to ``page_size``
+    records from ``page``. ``report_name`` alone resolves to that report's
+    newest swept run. Raises RunNotFoundError when there is no such sweep.
+    """
+    if run_id is None and report_name is not None:
+        run_id = db.latest_sweep_run_id(report_name)
+    if not run_id:
+        raise RunNotFoundError(f"(latest swept run of {report_name})")
+    if section is None:
+        index = db.get_sweep_index(run_id)
+        if index is None:
+            raise RunNotFoundError(run_id)
+        return {"run_id": run_id, **index}
+    sec = db.get_sweep_section(run_id, section)
+    if sec is None:
+        raise RunNotFoundError(f"{run_id} section {section!r}")
+    records = sec.get("records") or []
+    start = (page - 1) * page_size
+    return {
+        "run_id": run_id,
+        "section": section,
+        "status": sec.get("status"),
+        "errors": sec.get("errors") or [],
+        "page": page,
+        "page_count": max(1, -(-len(records) // page_size)),
+        "total": len(records),
+        "records": records[start : start + page_size],
+    }

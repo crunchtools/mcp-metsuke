@@ -11,6 +11,7 @@ _config: Config | None = None
 
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_RUN_LOCK_TTL_SECONDS = 1800
+DEFAULT_SWEEP_TIMEOUT_SECONDS = 1200
 
 
 class Config:
@@ -21,6 +22,12 @@ class Config:
     Trentina alert endpoint, which HMAC-signs and forwards the callback to the
     owning gatherer agent. The alert token is the one secret Metsuke carries,
     typed as SecretStr and honoring the ``<VAR>_FILE`` container convention.
+
+    Definitions that opt into a sweep are gathered first by Metsuke itself,
+    calling source backends through the Trentina gateway as the
+    ``metsuke-sweep`` profile. That needs ``TRENTINA_GATEWAY_URL`` (the profile's
+    ``/gateway/<profile>/mcp`` endpoint) and ``METSUKE_SWEEP_TOKEN`` — still no
+    third-party credentials, only a Trentina bearer token.
     """
 
     def __init__(self) -> None:
@@ -45,12 +52,27 @@ class Config:
         except ValueError:
             self.run_lock_ttl_seconds = DEFAULT_RUN_LOCK_TTL_SECONDS
 
+        self.trentina_gateway_url: str = _read_env("TRENTINA_GATEWAY_URL", "").rstrip("/")
+        sweep_token = _read_env("METSUKE_SWEEP_TOKEN", "")
+        self.sweep_token: SecretStr | None = SecretStr(sweep_token) if sweep_token else None
+        try:
+            self.sweep_timeout_seconds: int = int(
+                _read_env("METSUKE_SWEEP_TIMEOUT_SECONDS", str(DEFAULT_SWEEP_TIMEOUT_SECONDS))
+            )
+        except ValueError:
+            self.sweep_timeout_seconds = DEFAULT_SWEEP_TIMEOUT_SECONDS
+
         self._scheduler_enabled_override: bool | None = _read_bool("METSUKE_SCHEDULER_ENABLED")
 
     @property
     def callback_configured(self) -> bool:
         """True when the alert URL and token needed to fire a callback are set."""
         return bool(self.trentina_alert_url and self.alert_token)
+
+    @property
+    def sweep_configured(self) -> bool:
+        """True when the gateway URL and token needed to run a sweep are set."""
+        return bool(self.trentina_gateway_url and self.sweep_token)
 
     @property
     def scheduler_enabled(self) -> bool:
