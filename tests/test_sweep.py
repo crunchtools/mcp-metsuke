@@ -1312,3 +1312,30 @@ class TestGmailCapTruncation:
         gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
         sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
         assert sweep["sections"]["email"]["stats"]["search_pages_truncated"] is True
+
+
+class TestEmptyPageWithCursor:
+    async def test_empty_intermediate_page_keeps_reading(self) -> None:
+        pages = iter(
+            [
+                {"messages": [], "has_more": True, "response_metadata": {"next_cursor": "c1"}},
+                {"messages": CARLOS, "has_more": False},
+            ]
+        )
+        handlers = {
+            "slack_search_messages": lambda args: _ok(
+                {
+                    "matches": []
+                    if args["query"].startswith("to:@")
+                    else [_match("C0C4", "rhhi", "1790286385.234649", "U03QPSY9SEL", None)],
+                    "pagination": {"page_count": 1},
+                }
+            ),
+            "slack_get_thread_replies": lambda args: _ok(next(pages)),
+            "slack_get_user_info": lambda args: _ok({"user": {"real_name": "Carlos O'Donell"}}),
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        sweep = await run_sweep(SweepSpec(steps=[SLACK_STEP]), gw, now=NOW)
+        (record,) = sweep["sections"]["slack"]["records"]
+        assert record["thread_complete"] is True
+        assert record["state"] == "waiting"

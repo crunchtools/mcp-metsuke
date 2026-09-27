@@ -142,10 +142,26 @@ async def get_sweep(
 ) -> dict[str, Any]:
     """Read a run's sweep: the index, or one page of one section's records.
 
-    Without ``section`` returns the window, overall status and per-section
-    counts, errors and stats. With ``section`` returns up to ``page_size``
-    records from ``page``. ``report_name`` alone resolves to that report's
-    newest swept run. Raises RunNotFoundError when there is no such sweep.
+    Args:
+        run_id: The run to read. Takes precedence over ``report_name``.
+        report_name: Used only when ``run_id`` is None: resolves to that
+            report's newest run carrying a sweep (in flight or finished).
+        section: A section name from the index; None returns the index.
+        page: 1-based page within the section (validated 1-1000 at the tool).
+        page_size: Records per page (validated 1-50 at the tool).
+
+    Returns:
+        Index (``section`` None): ``{run_id, status, generated_at, window,
+        errors, sections: {name: {collector, status, record_count, errors,
+        stats}}}``, computed without decoding any record.
+
+        Section page: ``{run_id, section, status, errors, page, page_count,
+        total, records}``. A page past the end has ``records == []`` with
+        ``total`` and ``page_count`` intact.
+
+    Raises:
+        RunNotFoundError: no run resolves, the run has no sweep, or the run
+            has no such section.
     """
     if run_id is None and report_name is not None:
         run_id = db.latest_sweep_run_id(report_name)

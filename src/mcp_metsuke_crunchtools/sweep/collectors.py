@@ -289,7 +289,7 @@ async def _fetch_conversation(
             break
         res = page_res
         messages += page
-        if not page or not cursor:
+        if not cursor:  # an empty page with a cursor is not the end
             complete = True
             break
     return replace(res, flagged=any_flagged), messages, complete, page_failure
