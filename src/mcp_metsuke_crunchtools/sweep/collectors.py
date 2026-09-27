@@ -524,7 +524,13 @@ def _thread_payload(res: GatewayResult) -> tuple[str, dict[str, Any]]:
 
 
 def _drop_reason(facts: dict[str, Any], window: Window, account: str) -> str | None:
-    """The stats key a thread is dropped under, or None to keep it."""
+    """The stats key a thread is dropped under, or None to keep it.
+
+    Args:
+        facts: ``parsers.gmail_thread_facts`` output for the thread.
+        window: The report window; threads last active before it are old.
+        account: The mailbox address; a thread it sent last is the user's own.
+    """
     if (parsers.email_address(facts["sender"]) or "").lower() == account.lower():
         # The user sent the last message (their own reports, sent replies):
         # nothing is waiting on them, whatever the ownership analysis says.

@@ -38,6 +38,7 @@ from mcp_metsuke_crunchtools.sweep.client import (
     connect_gateway,
     result_from_blocks,
 )
+from mcp_metsuke_crunchtools.sweep.collectors import FREE_TEXT_EVENT_FIELDS, _drop_reason
 from mcp_metsuke_crunchtools.sweep.window import next_weekday, previous_weekday_at
 from mcp_metsuke_crunchtools.tools import (
     get_sweep,
@@ -837,7 +838,7 @@ class TestFlaggedWithheld:
         assert records
         for record in records:
             assert record["flagged"] is True
-            assert all(record[f] is None for f in ("title", "description", "location", "attendees"))
+            assert all(record[f] is None for f in FREE_TEXT_EVENT_FIELDS)
             assert record["link"]
             assert record["start"]
 
@@ -1476,3 +1477,23 @@ class TestSelfSentMail:
         section = sweep["sections"]["email"]
         assert [r["thread_id"] for r in section["records"]] == ["o1"]
         assert section["stats"]["dropped_self"] == 1
+
+
+class TestDropReason:
+    WINDOW = previous_weekday_at(NOW, TZ)
+
+    @pytest.mark.parametrize(
+        ("sender", "expected"),
+        [
+            ("Scott McCarty <smccarty@redhat.com>", "dropped_self"),
+            ("SMCCARTY@REDHAT.COM", "dropped_self"),
+            ("smccarty@redhat.com", "dropped_self"),
+            ("Mohan Shash <mohan.shash@redhat.com>", None),
+            ("Scott McCarty", None),  # display name only: not provably self
+            ("", None),
+            (None, None),
+        ],
+    )
+    def test_self_detection(self, sender: str | None, expected: str | None) -> None:
+        facts = {"subject": "Hi", "sender": sender, "ball": "user", "last_at": None}
+        assert _drop_reason(facts, self.WINDOW, "smccarty@redhat.com") == expected
