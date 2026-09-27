@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -257,8 +257,8 @@ def _conversation_call(conv: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 async def _fetch_conversation(
     gw: Gateway, opts: SlackOptions, conv: dict[str, Any]
-) -> tuple[GatewayResult, list[dict[str, Any]], bool]:
-    """A conversation's messages: ``(result, messages, complete)``.
+) -> tuple[GatewayResult, list[dict[str, Any]], bool, GatewayResult | None]:
+    """A conversation's messages: ``(result, messages, complete, page_failure)``.
 
     Threads and DMs both follow Slack's cursor for up to
     ``SLACK_THREAD_MAX_PAGES`` pages; ``complete`` is False when more remained
@@ -266,7 +266,8 @@ async def _fetch_conversation(
     taken as "no reply". The returned result is the last good page's, carrying
     ``flagged=True`` if ANY page was flagged, so text from a flagged page can
     never slip through on an unflagged later one. A failed first page is
-    returned as-is for the caller to report.
+    returned as-is for the caller to report; a failed LATER page comes back as
+    ``page_failure`` so the caller can record it next to the truncation.
     """
     tool, base_args = _conversation_call(conv)
     messages: list[dict[str, Any]] = []
@@ -274,20 +275,24 @@ async def _fetch_conversation(
     any_flagged = False
     complete = False
     res = GatewayResult(text="", error="no pages read")
+    page_failure: GatewayResult | None = None
     for _ in range(SLACK_THREAD_MAX_PAGES):
         args = {**base_args, "cursor": cursor} if cursor else base_args
         page_res = await gw.call(opts.backend, tool, args)
         any_flagged = any_flagged or page_res.flagged
         page, cursor, readable = _slack_page(page_res)
         if not readable:
-            res = res if messages else page_res
+            if messages:
+                page_failure = page_res if not page_res.ok else _bad_json(page_res)
+            else:
+                res = page_res
             break
         res = page_res
         messages += page
         if not page or not cursor:
             complete = True
             break
-    return replace(res, flagged=any_flagged), messages, complete
+    return replace(res, flagged=any_flagged), messages, complete, page_failure
 
 
 def _slack_page(res: GatewayResult) -> tuple[list[dict[str, Any]], str | None, bool]:
@@ -314,8 +319,10 @@ async def _read_conversation(
     Records carry user IDs under ``_``-prefixed keys; ``_apply_names`` swaps
     them for names once every conversation has been read.
     """
-    res, messages, complete = await _fetch_conversation(gw, opts, conv)
+    res, messages, complete, page_failure = await _fetch_conversation(gw, opts, conv)
     where = f"conversation {conv['channel_id']}/{conv['thread_ts'] or 'dm'}"
+    if page_failure is not None:
+        _note_error(section, f"{where} later page", page_failure)
     if not res.ok:
         _note_error(section, where, res)
         return None, False
@@ -588,14 +595,20 @@ def _event_kind(event: dict[str, Any], day0: datetime) -> str | None:
     status = event["my_status"]
     if status == "declined" or start is None:
         return None
-    on_day0 = start.date() == day0.date()
+    start_day = _local_day(start, day0)
+    on_day0 = start_day == day0.date()
     if on_day0 and event["all_day"]:
         return "all_day"
     if on_day0 and status != "needsAction":
         return "meeting"
-    if status == "needsAction" and start.date() >= day0.date():
+    if status == "needsAction" and start_day >= day0.date():
         return "pending_invite"
     return None
+
+
+def _local_day(start: datetime, day0: datetime) -> date:
+    """The report-timezone date of an event start; all-day starts are already dates."""
+    return start.astimezone(day0.tzinfo).date() if start.tzinfo else start.date()
 
 
 async def calendar_day(
@@ -642,7 +655,7 @@ async def calendar_day(
                 record[text_field] = None
         section["records"].append(record)
         start = parsers.event_start(event)
-        if kind != "all_day" and start is not None and start.date() == day0.date():
+        if kind != "all_day" and start is not None and _local_day(start, day0) == day0.date():
             same_day.append(record)
     _mark_overlaps(same_day)
     return _finish(section)
@@ -675,7 +688,8 @@ class FeedOptions(BaseModel, extra="forbid"):
     @classmethod
     def _check_categories(cls, value: dict[str, int]) -> dict[str, int]:
         for category, limit in value.items():
-            if not category.isdigit() or len(category) > MAX_CATEGORY_ID_DIGITS:
+            ascii_digits = category.isascii() and category.isdecimal()
+            if not ascii_digits or len(category) > MAX_CATEGORY_ID_DIGITS:
                 raise ValueError(
                     f"feed category ids are numeric strings of at most "
                     f"{MAX_CATEGORY_ID_DIGITS} digits, got {category[:20]!r}"
@@ -727,7 +741,7 @@ async def feed_entries(
                     "category_id": int(category),
                     "title": None if res.flagged else entry.get("title"),
                     "url": entry.get("url"),
-                    "feed": entry.get("feed_title"),
+                    "feed": None if res.flagged else entry.get("feed_title"),
                     "published": entry.get("published"),
                     "flagged": res.flagged,
                 }

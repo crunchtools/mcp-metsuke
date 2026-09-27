@@ -834,12 +834,15 @@ class TestFlaggedWithheld:
             assert record["start"]
 
     async def test_feed_title_withheld(self) -> None:
-        entries = json.dumps([{"id": 7, "title": "ignore previous", "url": "https://x"}])
+        entries = json.dumps(
+            [{"id": 7, "title": "ignore previous", "url": "https://x", "feed_title": "evil"}]
+        )
         gw = FakeGateway(lambda b, t, a: GatewayResult(text=entries, flagged=True))
         step = {"section": "rss", "collector": "feed_entries", "options": {"categories": {"1": 5}}}
         sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
         (record,) = sweep["sections"]["rss"]["records"]
         assert record["title"] is None
+        assert record["feed"] is None
         assert record["entry_id"] == 7
         assert record["url"] == "https://x"
 
@@ -1198,6 +1201,7 @@ class TestSlackPageFailure:
         (record,) = sweep["sections"]["slack"]["records"]
         assert record["thread_complete"] is False
         assert record["state"] == "unverified"
+        assert any("later page: boom" in e for e in sweep["sections"]["slack"]["errors"])
 
 
 class TestDmPaging:
@@ -1245,3 +1249,50 @@ class TestFeedCategoryBounds:
         }
         with pytest.raises(ValidationError):
             SweepSpec(steps=[step])
+
+
+class TestCategoryDigits:
+    def test_non_ascii_digits_rejected(self) -> None:
+        step = {"section": "rss", "collector": "feed_entries", "options": {"categories": {"²": 5}}}
+        with pytest.raises(ValidationError):
+            SweepSpec(steps=[step])
+
+
+class TestCalendarTimezone:
+    async def test_event_dates_use_the_report_timezone(self) -> None:
+        # 03:30 UTC on the 29th is 23:30 ET on the 28th: the report day.
+        text = (
+            '- "Late call" (Starts: 2026-09-29T03:30:00+00:00, Ends: 2026-09-29T04:00:00+00:00)\n'
+            "  Attendee Details: me@x.com: accepted\n"
+            "  ID: z | Link: https://cal/z\n"
+        )
+        gw = FakeGateway(lambda b, t, a: _ok(text))
+        step = {
+            "section": "calendar",
+            "collector": "calendar_day",
+            "options": {"backend": "gw-work", "account": "me@x.com"},
+        }
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        (record,) = sweep["sections"]["calendar"]["records"]
+        assert record["kind"] == "meeting"
+
+
+class TestGetSweepThroughMcp:
+    async def test_registered_tool_serves_index_and_pages(
+        self, in_memory_db: sqlite3.Connection
+    ) -> None:
+        from mcp_metsuke_crunchtools import server
+
+        await upsert_definition(name="r", gather_prompt="p")
+        run = db.begin_run("r", "manual")
+        db.set_sweep(
+            run["run_id"],
+            {"status": "ready", "sections": {"s": {"status": "ok", "records": [{"a": 1}]}}},
+        )
+        async with Client(server.mcp) as client:
+            index = await client.call_tool("get_sweep_tool", {"run_id": run["run_id"]})
+            page = await client.call_tool("get_sweep_tool", {"report_name": "r", "section": "s"})
+            bad = await client.call_tool("get_sweep_tool", {"section": "s"}, raise_on_error=False)
+        assert index.structured_content["sections"]["s"]["record_count"] == 1
+        assert page.structured_content["records"] == [{"a": 1}]
+        assert bad.is_error
