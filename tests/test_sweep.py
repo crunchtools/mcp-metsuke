@@ -14,13 +14,15 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+import httpx as httpx_module
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_headers
 from fastmcp.utilities.tests import run_server_async
-from mcp.types import TextContent
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData, TextContent
 from pydantic import ValidationError
 
 from mcp_metsuke_crunchtools import config as config_mod
@@ -1380,3 +1382,35 @@ class TestExpiredRuns:
         run = db.begin_run("r", "manual")
         await scheduler.sweep_and_dispatch("r", run["run_id"], {"gather_prompt": "p"})
         assert dispatched == []
+
+
+class _RaisingClient:
+    """A stand-in fastmcp Client whose call_tool raises a transport failure."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+    async def call_tool(self, *_a: object, **_k: object) -> object:
+        raise self.exc
+
+
+class TestGatewayTransportFailures:
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            ConnectionError("reset"),
+            TimeoutError("slow"),
+            httpx_module.ReadTimeout("read timeout"),
+            McpError(ErrorData(code=-32000, message="session gone")),
+        ],
+    )
+    async def test_call_failure_becomes_error_result(self, exc: BaseException) -> None:
+        gw = TrentinaGateway(cast("Client[Any]", _RaisingClient(exc)))
+        res = await gw.call("slack", "slack_search_messages", {"query": "q"})
+        assert not res.ok
+        assert type(exc).__name__ in (res.error or "")
+
+    async def test_unexpected_exception_is_not_swallowed(self) -> None:
+        gw = TrentinaGateway(cast("Client[Any]", _RaisingClient(KeyError("bug"))))
+        with pytest.raises(KeyError):
+            await gw.call("slack", "slack_search_messages", {})
