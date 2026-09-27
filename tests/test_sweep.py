@@ -1414,3 +1414,30 @@ class TestGatewayTransportFailures:
         gw = TrentinaGateway(cast("Client[Any]", _RaisingClient(KeyError("bug"))))
         with pytest.raises(KeyError):
             await gw.call("slack", "slack_search_messages", {})
+
+
+class TestFirstPageFailure:
+    @pytest.mark.parametrize(
+        "first_page",
+        [GatewayResult(text="", error="refused"), GatewayResult(text="<html>not json</html>")],
+    )
+    async def test_unreadable_first_page_omits_conversation_and_records_error(
+        self, first_page: GatewayResult
+    ) -> None:
+        handlers = {
+            "slack_search_messages": lambda args: _ok(
+                {
+                    "matches": []
+                    if args["query"].startswith("to:@")
+                    else [_match("C0C4", "rhhi", "1790286385.234649", "U03QPSY9SEL", None)],
+                    "pagination": {"page_count": 1},
+                }
+            ),
+            "slack_get_thread_replies": lambda args: first_page,
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        sweep = await run_sweep(SweepSpec(steps=[SLACK_STEP]), gw, now=NOW)
+        section = sweep["sections"]["slack"]
+        assert section["records"] == []
+        assert any("conversation C0C4" in e for e in section["errors"])
+        assert all("not json" not in e for e in section["errors"])
