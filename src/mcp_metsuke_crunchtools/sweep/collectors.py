@@ -78,6 +78,7 @@ FREE_TEXT_EVENT_FIELDS = (
 
 # Feeds
 MAX_FEED_CATEGORIES = 12
+MAX_CATEGORY_ID_DIGITS = 9
 MAX_FEED_LIMIT = 100
 MAX_FEED_RECORDS = 300
 MAX_SINCE_DAYS = 30
@@ -238,50 +239,47 @@ def _new_conversation(
     }
 
 
+def _conversation_call(conv: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The paged read for a conversation: thread replies, or DM history from the first hit."""
+    if conv["thread_ts"]:
+        return "slack_get_thread_replies", {
+            "channel_id": conv["channel_id"],
+            "thread_ts": conv["thread_ts"],
+            "limit": SLACK_THREAD_LIMIT,
+        }
+    return "slack_get_channel_history", {
+        "channel_id": conv["channel_id"],
+        "oldest": f"{conv['earliest_ts'] - 1:.6f}",
+        "limit": SLACK_DM_HISTORY_LIMIT,
+        "inclusive": True,
+    }
+
+
 async def _fetch_conversation(
     gw: Gateway, opts: SlackOptions, conv: dict[str, Any]
 ) -> tuple[GatewayResult, list[dict[str, Any]], bool]:
     """A conversation's messages: ``(result, messages, complete)``.
 
-    Threads follow Slack's cursor for up to ``SLACK_THREAD_MAX_PAGES`` pages;
-    ``complete`` is False when more remained or a later page could not be
-    read. The returned result is the last
-    page's, except that it carries ``flagged=True`` if ANY page was flagged, so
-    text from a flagged page can never slip through on an unflagged later one.
-    A failed or non-JSON page ends the read with no further pages.
+    Threads and DMs both follow Slack's cursor for up to
+    ``SLACK_THREAD_MAX_PAGES`` pages; ``complete`` is False when more remained
+    or a later page could not be read, so a reply beyond what was read is never
+    taken as "no reply". The returned result is the last good page's, carrying
+    ``flagged=True`` if ANY page was flagged, so text from a flagged page can
+    never slip through on an unflagged later one. A failed first page is
+    returned as-is for the caller to report.
     """
-    if not conv["thread_ts"]:
-        res = await gw.call(
-            opts.backend,
-            "slack_get_channel_history",
-            {
-                "channel_id": conv["channel_id"],
-                "oldest": f"{conv['earliest_ts'] - 1:.6f}",
-                "limit": SLACK_DM_HISTORY_LIMIT,
-                "inclusive": True,
-            },
-        )
-        dm_messages, _, readable = _slack_page(res)
-        return res, dm_messages, readable
+    tool, base_args = _conversation_call(conv)
     messages: list[dict[str, Any]] = []
     cursor: str | None = None
     any_flagged = False
     complete = False
     res = GatewayResult(text="", error="no pages read")
     for _ in range(SLACK_THREAD_MAX_PAGES):
-        args: dict[str, Any] = {
-            "channel_id": conv["channel_id"],
-            "thread_ts": conv["thread_ts"],
-            "limit": SLACK_THREAD_LIMIT,
-        }
-        if cursor:
-            args["cursor"] = cursor
-        page_res = await gw.call(opts.backend, "slack_get_thread_replies", args)
+        args = {**base_args, "cursor": cursor} if cursor else base_args
+        page_res = await gw.call(opts.backend, tool, args)
         any_flagged = any_flagged or page_res.flagged
         page, cursor, readable = _slack_page(page_res)
         if not readable:
-            # A failed first page is returned as-is for the caller to report; a
-            # failed later page leaves what was read, marked incomplete.
             res = res if messages else page_res
             break
         res = page_res
@@ -677,8 +675,11 @@ class FeedOptions(BaseModel, extra="forbid"):
     @classmethod
     def _check_categories(cls, value: dict[str, int]) -> dict[str, int]:
         for category, limit in value.items():
-            if not category.isdigit():
-                raise ValueError(f"feed category ids are numeric strings, got {category!r}")
+            if not category.isdigit() or len(category) > MAX_CATEGORY_ID_DIGITS:
+                raise ValueError(
+                    f"feed category ids are numeric strings of at most "
+                    f"{MAX_CATEGORY_ID_DIGITS} digits, got {category[:20]!r}"
+                )
             if not 1 <= limit <= MAX_FEED_LIMIT:
                 raise ValueError(f"category {category} limit must be 1-{MAX_FEED_LIMIT}")
         return value

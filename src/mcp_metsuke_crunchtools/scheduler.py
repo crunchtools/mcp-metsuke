@@ -213,6 +213,23 @@ async def sweep_and_dispatch(
         logger.exception("sweep_and_dispatch crashed for '%s'", name)
 
 
+def dispatch_after_sweep(
+    name: str,
+    run_id: str,
+    definition: dict[str, Any],
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Start sweep-then-dispatch in the background if the definition has a sweep.
+
+    Returns True when it did (the caller must not dispatch), False for a
+    definition without a sweep. Shared by the scheduler and trigger_report.
+    """
+    if not _has_sweep(definition):
+        return False
+    start_background(sweep_and_dispatch(name, run_id, definition, conn=conn))
+    return True
+
+
 def start_background(coro: Any) -> None:
     """Run a coroutine on the current loop, holding a reference until it ends."""
     task: asyncio.Task[None] = asyncio.get_running_loop().create_task(coro)
@@ -286,11 +303,10 @@ async def _tick(
             logger.warning("skipping scheduled report '%s' — a run is already in flight", name)
             continue
         run_id = run["run_id"]
-        if _has_sweep(row):
-            # Sweeps take minutes: mark the slot fired now and sweep in the
-            # background so later due reports are not held up.
+        if dispatch_after_sweep(name, run_id, row, conn=conn):
+            # Sweeps take minutes: the slot is fired now and the sweep runs in
+            # the background so later due reports are not held up.
             db.set_last_fired(conn, name, datetime.now(UTC).isoformat())
-            start_background(sweep_and_dispatch(name, run_id, row, conn=conn))
             logger.info("fired scheduled report '%s' (run %s) -> sweeping", name, run_id)
             continue
         try:

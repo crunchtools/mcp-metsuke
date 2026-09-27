@@ -12,7 +12,6 @@ from ..errors import (
     CallbackNotConfiguredError,
     DefinitionNotFoundError,
 )
-from ..sweep import sweep_spec_of
 
 
 async def list_reports() -> list[dict[str, Any]]:
@@ -76,9 +75,7 @@ async def trigger_report(name: str) -> dict[str, Any]:
         raise CallbackNotConfiguredError
     run = db.begin_run(name, "manual")
     run_id = run["run_id"]
-    if sweep_spec_of(definition.get("source_config")) is not None:
-        # A sweep takes minutes; answer now and sweep + dispatch in the background.
-        scheduler.start_background(scheduler.sweep_and_dispatch(name, run_id, definition))
+    if scheduler.dispatch_after_sweep(name, run_id, definition):
         return {"report": name, "run_id": run_id, "dispatched": "after_sweep", "sweep": True}
     try:
         status_code = await scheduler.trigger_now(

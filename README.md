@@ -132,6 +132,37 @@ flags are stored as metadata only, with their text withheld.
 | `calendar_day` | The report day's meetings, pending invites over a lookahead, and hard overlaps |
 | `feed_entries` | Recent entries per feed category (read or unread), with a longer window after a weekend |
 
+### Collector options
+
+Every step is `{"section": "<name>", "collector": "<collector>", "options": {...}}`.
+Section names are `[a-z0-9_-]`, unique, up to 12 steps. Top-level `timezone`
+(IANA, default `America/New_York`) and `window_hour` (0-23, default 6) set the
+window: from that hour on the previous weekday until the run.
+
+| Collector | Option | Required | Default | Bounds |
+|-----------|--------|----------|---------|--------|
+| `slack_waiting` | `user_id` | yes | | 2-32 chars |
+| | `handle` | yes | | 1-64 chars |
+| | `backend` | | `slack` | ≤64 chars |
+| | `self_label` | | `you` | ≤64 chars |
+| | `lookback_days` | | 7 | 1-30 |
+| | `max_conversations` | | 40 | 1-100 |
+| | `workspace_url` | | `https://redhat-internal.slack.com` | ≤200 chars |
+| `gmail_waiting` | `backend` | yes | | e.g. `gw-work`, `gw-personal` |
+| | `account` | yes | | the mailbox address |
+| | `query_extra` | | `""` | ≤500 chars, appended to `in:inbox after:<window>` |
+| | `max_threads` | | 60 | 1-200 |
+| | `body_chars` | | 1200 | 0-4000 (0 = no body) |
+| | `link_template` | | Gmail `#all/{thread_id}` | ≤200 chars, or null |
+| `calendar_day` | `backend` | yes | | |
+| | `account` | yes | | |
+| | `timezone` | | `America/New_York` | IANA zone |
+| | `lookahead_days` | | 3 | 0-14 (pending invites) |
+| `feed_entries` | `categories` | yes | | 1-12 entries of `"<id>": <limit>`, id ≤9 digits, limit 1-100 |
+| | `backend` | | `feeds` | |
+| | `since_days` | | 1 | 1-30 |
+| | `since_days_after_weekend` | | 3 | 1-30 (Mondays and weekend runs) |
+
 Collectors are code in `sweep/collectors.py`, not configuration: a definition
 can only pick and parameterize them. A bad spec is rejected at
 `upsert_definition` time.

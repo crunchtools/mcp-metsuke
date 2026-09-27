@@ -156,18 +156,16 @@ async def get_sweep(
         if index is None:
             raise RunNotFoundError(run_id)
         return {"run_id": run_id, **index}
-    sec = db.get_sweep_section(run_id, section)
+    sec = db.get_sweep_page(run_id, section, (page - 1) * page_size, page_size)
     if sec is None:
         raise RunNotFoundError(f"{run_id} section {section!r}")
-    records = sec.get("records") or []
-    start = (page - 1) * page_size
     return {
         "run_id": run_id,
         "section": section,
-        "status": sec.get("status"),
-        "errors": sec.get("errors") or [],
+        "status": sec["status"],
+        "errors": sec["errors"],
         "page": page,
-        "page_count": max(1, -(-len(records) // page_size)),
-        "total": len(records),
-        "records": records[start : start + page_size],
+        "page_count": max(1, -(-sec["total"] // page_size)),
+        "total": sec["total"],
+        "records": sec["records"],
     }

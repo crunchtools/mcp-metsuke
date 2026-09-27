@@ -547,6 +547,12 @@ class TestSweepStorage:
         assert page["total"] == 2
         assert page["page_count"] == 2
         assert len(page["records"]) == 1
+        second = await get_sweep(report_name="daily-briefing", section="slack", page=2, page_size=1)
+        assert len(second["records"]) == 1
+        assert second["records"][0] != page["records"][0]
+        beyond = await get_sweep(report_name="daily-briefing", section="slack", page=3, page_size=1)
+        assert beyond["records"] == []
+        assert (beyond["total"], beyond["page_count"]) == (2, 2)
 
     async def test_unconfigured_sweep_records_error(self, in_memory_db: sqlite3.Connection) -> None:
         await upsert_definition(name="r", gather_prompt="p")
@@ -891,6 +897,7 @@ class TestSlackDirectMessages:
         assert record["asker"] == "Laura Santamaria"
         assert record["state"] == "waiting"
         (history,) = [c for c in calls if c["tool"] == "slack_get_channel_history"]
+        assert record["thread_complete"] is True
         assert history["channel_id"] == "D1"
         assert history["limit"] == 30
         assert float(history["oldest"]) < 1790300000.0001
@@ -1083,7 +1090,9 @@ class TestMigration:
         assert {"sweep_status", "sweep_data"} <= columns
         run = db.begin_run("r", "manual")
         db.set_sweep(run["run_id"], {"status": "ready", "sections": {"s": {"records": []}}})
-        assert db.get_sweep_section(run["run_id"], "s") == {"records": []}
+        page = db.get_sweep_page(run["run_id"], "s", 0, 10)
+        assert page is not None
+        assert page["total"] == 0
 
 
 class TestSectionNames:
@@ -1093,7 +1102,7 @@ class TestSectionNames:
         await upsert_definition(name="r", gather_prompt="p")
         run = db.begin_run("r", "manual")
         db.set_sweep(run["run_id"], {"status": "ready", "sections": {"a": {"records": []}}})
-        assert db.get_sweep_section(run["run_id"], 'a"].x') is None
+        assert db.get_sweep_page(run["run_id"], 'a"].x', 0, 10) is None
         with pytest.raises(RunNotFoundError):
             await get_sweep(run_id=run["run_id"], section="nope")
 
@@ -1189,3 +1198,50 @@ class TestSlackPageFailure:
         (record,) = sweep["sections"]["slack"]["records"]
         assert record["thread_complete"] is False
         assert record["state"] == "unverified"
+
+
+class TestDmPaging:
+    async def test_dm_history_follows_cursor_and_flags_truncation(self) -> None:
+        cursors: list[str | None] = []
+
+        def history(args: dict[str, Any]) -> GatewayResult:
+            cursors.append(args.get("cursor"))
+            more = {"has_more": True, "response_metadata": {"next_cursor": f"h{len(cursors)}"}}
+            return _ok(
+                {"messages": [{"user": "U7", "ts": "1790300000.000100", "text": "hi"}], **more}
+            )
+
+        dm_hit = {
+            "channel": {"id": "D1", "is_im": True, "user": "U7"},
+            "user": "U7",
+            "ts": "1790300000.000100",
+            "text": "hi",
+            "permalink": "https://x.slack.com/archives/D1/p1790300000000100",
+        }
+        handlers = {
+            "slack_search_messages": lambda args: _ok(
+                {
+                    "matches": [dm_hit] if args["query"].startswith("to:@") else [],
+                    "pagination": {"page_count": 1},
+                }
+            ),
+            "slack_get_channel_history": history,
+            "slack_get_user_info": lambda args: _ok({"user": {"real_name": "Laura Santamaria"}}),
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        sweep = await run_sweep(SweepSpec(steps=[SLACK_STEP]), gw, now=NOW)
+        (record,) = sweep["sections"]["slack"]["records"]
+        assert cursors == [None, "h1", "h2"]
+        assert record["thread_complete"] is False
+        assert record["state"] == "unverified"
+
+
+class TestFeedCategoryBounds:
+    def test_overlong_category_id_rejected(self) -> None:
+        step = {
+            "section": "rss",
+            "collector": "feed_entries",
+            "options": {"categories": {"1" * 10: 5}},
+        }
+        with pytest.raises(ValidationError):
+            SweepSpec(steps=[step])

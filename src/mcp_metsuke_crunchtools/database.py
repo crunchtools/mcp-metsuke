@@ -421,21 +421,35 @@ def set_sweep(
     conn.commit()
 
 
-def get_sweep_section(run_id: str, section: str) -> dict[str, Any] | None:
-    """One section of a run's sweep, decoded alone (not the whole document).
+def get_sweep_page(run_id: str, section: str, offset: int, limit: int) -> dict[str, Any] | None:
+    """One page of one sweep section, sliced in SQLite: only that page is decoded.
 
-    The section is matched as a ``json_each`` key, never spliced into a JSON
-    path, so any caller-supplied name is just data.
+    Returns ``{status, errors, total, records}``, or None when the run has no
+    such section. The section is matched as a ``json_each`` key, never spliced
+    into a JSON path, so any caller-supplied name is just data.
     """
-    row = query_one(
-        "SELECT s.value AS section FROM report_outputs o, "
-        "json_each(o.sweep_data, '$.sections') s WHERE o.run_id = ? AND s.key = ?",
+    head = query_one(
+        "SELECT json_extract(s.value, '$.status') AS status, "
+        "json_extract(s.value, '$.errors') AS errors, "
+        "json_array_length(s.value, '$.records') AS total "
+        "FROM report_outputs o, json_each(o.sweep_data, '$.sections') s "
+        "WHERE o.run_id = ? AND s.key = ?",
         (run_id, section),
     )
-    if not row or row["section"] is None:
+    if head is None:
         return None
-    decoded: dict[str, Any] = json.loads(row["section"])
-    return decoded
+    rows = query(
+        "SELECT r.value AS record FROM report_outputs o, "
+        "json_each(o.sweep_data, '$.sections') s, json_each(s.value, '$.records') r "
+        "WHERE o.run_id = ? AND s.key = ? ORDER BY r.key LIMIT ? OFFSET ?",
+        (run_id, section, limit, offset),
+    )
+    return {
+        "status": head["status"],
+        "errors": json.loads(head["errors"]) if head["errors"] else [],
+        "total": head["total"] or 0,
+        "records": [json.loads(r["record"]) for r in rows],
+    }
 
 
 def get_sweep_index(run_id: str) -> dict[str, Any] | None:
