@@ -38,7 +38,7 @@ from mcp_metsuke_crunchtools.sweep.client import (
     connect_gateway,
     result_from_blocks,
 )
-from mcp_metsuke_crunchtools.sweep.collectors import FREE_TEXT_EVENT_FIELDS, _drop_reason
+from mcp_metsuke_crunchtools.sweep.collectors import _drop_reason
 from mcp_metsuke_crunchtools.sweep.window import next_weekday, previous_weekday_at
 from mcp_metsuke_crunchtools.tools import (
     get_sweep,
@@ -838,7 +838,15 @@ class TestFlaggedWithheld:
         assert records
         for record in records:
             assert record["flagged"] is True
-            assert all(record[f] is None for f in FREE_TEXT_EVENT_FIELDS)
+            withheld = (
+                "title",
+                "description",
+                "location",
+                "organizer",
+                "meeting_link",
+                "attendees",
+            )
+            assert all(record[f] is None for f in withheld)
             assert record["link"]
             assert record["start"]
 
