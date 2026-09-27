@@ -459,6 +459,7 @@ async def gmail_waiting(
     stats = section["stats"]
     stats.update(
         threads_found=len(thread_ids),
+        dropped_self=0,
         dropped_noise=0,
         dropped_not_owed=0,
         dropped_old=0,
@@ -522,8 +523,12 @@ def _thread_payload(res: GatewayResult) -> tuple[str, dict[str, Any]]:
     return str(payload.get("content") or ""), dict(payload.get("analysis") or {})
 
 
-def _drop_reason(facts: dict[str, Any], window: Window) -> str | None:
+def _drop_reason(facts: dict[str, Any], window: Window, account: str) -> str | None:
     """The stats key a thread is dropped under, or None to keep it."""
+    if (parsers.email_address(facts["sender"]) or "").lower() == account.lower():
+        # The user sent the last message (their own reports, sent replies):
+        # nothing is waiting on them, whatever the ownership analysis says.
+        return "dropped_self"
     if parsers.gmail_is_noise(facts["subject"], facts["sender"]):
         return "dropped_noise"
     if facts["ball"] not in (None, "user"):
@@ -542,7 +547,7 @@ def _gmail_record(
     stats: dict[str, Any],
 ) -> dict[str, Any] | None:
     facts = parsers.gmail_thread_facts(*_thread_payload(res))
-    reason = _drop_reason(facts, window)
+    reason = _drop_reason(facts, window, opts.account)
     if reason is not None:
         stats[reason] += 1
         return None

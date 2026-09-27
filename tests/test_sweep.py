@@ -1445,3 +1445,34 @@ class TestFirstPageFailure:
         assert section["records"] == []
         assert any("conversation C0C4" in e for e in section["errors"])
         assert all("not json" not in e for e in section["errors"])
+
+
+class TestSelfSentMail:
+    async def test_threads_last_sent_by_the_account_are_dropped(self) -> None:
+        analyses = {
+            "s1": {
+                "last_sender": "Scott McCarty <SMcCarty@redhat.com>",
+                "last_timestamp": "2026-09-26T10:00:00+00:00",
+            },
+            "o1": {
+                "last_sender": "Mohan Shash <m@redhat.com>",
+                "ball_in_court_of": "user",
+                "last_timestamp": "2026-09-26T10:00:00+00:00",
+            },
+        }
+        handlers = {
+            "search_gmail_messages": lambda args: _ok("Thread ID: s1\nThread ID: o1\n"),
+            "get_gmail_thread_content": lambda args: _ok(
+                {"content": THREAD_CONTENT, "analysis": analyses[args["thread_id"]]}
+            ),
+        }
+        step = {
+            "section": "email",
+            "collector": "gmail_waiting",
+            "options": {"backend": "gw-work", "account": "smccarty@redhat.com"},
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        section = sweep["sections"]["email"]
+        assert [r["thread_id"] for r in section["records"]] == ["o1"]
+        assert section["stats"]["dropped_self"] == 1
