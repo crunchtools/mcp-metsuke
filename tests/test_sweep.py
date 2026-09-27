@@ -130,6 +130,10 @@ class TestSlackReplyState:
         assert state is not None
         assert state.state == "waiting"
 
+    def test_slackbot_never_asks(self) -> None:
+        msgs = [{"user": "USLACKBOT", "ts": "1.0", "text": "You have been removed from #x"}]
+        assert parsers.slack_reply_state(msgs, SCOTT, is_dm=True) is None
+
     def test_bots_never_ask(self) -> None:
         msgs = [{"user": None, "username": "shadowbot", "ts": "1.0", "text": f"Hi <@{SCOTT}>"}]
         assert parsers.slack_reply_state(msgs, SCOTT, is_dm=True) is None

@@ -8,6 +8,12 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-09-27
+
+### Fixed
+- Slackbot (`USLACKBOT`) DMs such as channel-removal notices no longer count
+  as asks waiting on the user; the first live sweep listed one.
+
 ## [1.2.1] - 2026-09-27
 
 ### Fixed
