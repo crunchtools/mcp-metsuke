@@ -501,10 +501,12 @@ async def _search_threads(
         _count_ok(section)
         page_ids, token = parsers.gmail_search_page(res.text)
         thread_ids += [t for t in page_ids if t not in thread_ids]
-        if not token or len(thread_ids) >= opts.max_threads:
+        if not token:
             break
-        if page == MAX_PAGES:
+        if len(thread_ids) >= opts.max_threads or page == MAX_PAGES:
+            # More results exist than will be read: say so.
             section["stats"]["search_pages_truncated"] = True
+            break
     return thread_ids
 
 

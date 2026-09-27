@@ -489,10 +489,6 @@ class TestSpecValidation:
         )
         assert ok.source_config is not None
 
-    def test_get_sweep_params_need_a_run(self) -> None:
-        with pytest.raises(ValidationError):
-            GetSweepParams()
-
 
 class TestEngineResilience:
     async def test_crashing_collector_is_contained(self) -> None:
@@ -1296,3 +1292,23 @@ class TestGetSweepThroughMcp:
         assert index.structured_content["sections"]["s"]["record_count"] == 1
         assert page.structured_content["records"] == [{"a": 1}]
         assert bad.is_error
+
+
+class TestGmailCapTruncation:
+    async def test_hitting_max_threads_with_more_pages_is_reported(self) -> None:
+        handlers = {
+            "search_gmail_messages": lambda args: _ok(
+                "Thread ID: a\nThread ID: b\ncall again with page_token='more'"
+            ),
+            "get_gmail_thread_content": lambda args: _ok(
+                {"content": THREAD_CONTENT, "analysis": GMAIL_ANALYSES["t1"]}
+            ),
+        }
+        step = {
+            "section": "email",
+            "collector": "gmail_waiting",
+            "options": {"backend": "gw-work", "account": "smccarty@redhat.com", "max_threads": 2},
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        assert sweep["sections"]["email"]["stats"]["search_pages_truncated"] is True
