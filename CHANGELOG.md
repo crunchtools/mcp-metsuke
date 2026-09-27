@@ -20,8 +20,9 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
   The daily-briefing test runs of 2026-09-27 showed why: a gathering LLM left
   to drive the sweep drifted every run, fired unbounded or refused calls, and
   tripped its MCP client's breaker (RT #1469, RT #1505).
-- Reply-state logic in code: Slack threads are read in full and an ask the
-  user already answered is dropped; a reaction-only acknowledgement is kept.
+- Reply-state logic in code: Slack threads and DMs are read up to a three-page
+  cap (longer or partly unreadable ones are marked `unverified`), an ask the
+  user already answered is dropped, and a reaction-only acknowledgement is kept.
   Email uses the backend's own ownership analysis.
 - Results Trentina flags are stored as metadata only, text withheld.
 - `TRENTINA_GATEWAY_URL`, `METSUKE_SWEEP_TOKEN` (+ `_FILE`),

@@ -109,7 +109,8 @@ def _age_days(then: datetime, now: datetime) -> float:
 
 
 def _bad_json(res: GatewayResult) -> GatewayResult:
-    return GatewayResult(text="", error=f"non-JSON result: {res.text[:120]!r}")
+    """A parse-failure error that never quotes the response (it may be flagged text)."""
+    return GatewayResult(text="", error=f"unparseable result ({len(res.text)} chars)")
 
 
 # --- Slack ---------------------------------------------------------------

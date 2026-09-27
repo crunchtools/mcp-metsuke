@@ -127,7 +127,7 @@ flags are stored as metadata only, with their text withheld.
 
 | Collector | What it produces |
 |-----------|------------------|
-| `slack_waiting` | DMs and @-mentions over a lookback, each thread read in full; `answered` ones dropped, others marked `waiting` or `acknowledged` (reaction only), with `in_window` separating new asks from still-open ones |
+| `slack_waiting` | DMs and @-mentions over a lookback, each thread or DM read for up to three pages (longer or partly unreadable ones are marked `unverified`); `answered` ones dropped, others marked `waiting` or `acknowledged` (reaction only), with `in_window` separating new asks from still-open ones |
 | `gmail_waiting` | Inbox threads in the window where the backend's ownership analysis says the ball is in the user's court; automated mail and bare calendar notices dropped, invitations kept |
 | `calendar_day` | The report day's meetings, pending invites over a lookahead, and hard overlaps |
 | `feed_entries` | Recent entries per feed category (read or unread), with a longer window after a weekend |
