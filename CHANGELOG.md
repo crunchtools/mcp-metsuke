@@ -8,6 +8,16 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-27
+
+### Fixed
+- Pin `fastmcp>=3.4,<4` and `mcp>=1.29,<2`. The container installs with plain
+  pip rather than from `uv.lock`, so the 1.2.0 image resolved fastmcp 4.0.10 /
+  mcp 2.2.0, where `mcp.shared.exceptions.McpError` no longer exists, and
+  crash-looped on import. Rolled back to 1.1.0 within minutes; no data touched.
+- CI's container check now imports the server inside the built image; it used
+  to end in `|| true` and could not fail.
+
 ## [1.2.0] - 2026-09-27
 
 ### Added
