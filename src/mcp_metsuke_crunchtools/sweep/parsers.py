@@ -15,6 +15,8 @@ from typing import Any
 
 # --- Slack ---------------------------------------------------------------
 
+# Slackbot posts as a user, not a bot_id: channel removals, reminders, etc.
+SLACKBOT = "USLACKBOT"
 _THREAD_TS = re.compile(r"[?&]thread_ts=([0-9.]+)")
 
 
@@ -26,9 +28,10 @@ def slack_link_parts(permalink: str) -> tuple[str, str | None]:
 
 
 def slack_is_bot(message: dict[str, Any]) -> bool:
-    """True for bot and app messages, which never count as asks."""
+    """True for bot and app messages (Slackbot included), which never count as asks."""
     return bool(
-        message.get("bot_id")
+        message.get("user") == SLACKBOT
+        or message.get("bot_id")
         or message.get("subtype") == "bot_message"
         or (message.get("user") is None and message.get("username"))
     )
