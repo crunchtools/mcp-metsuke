@@ -8,6 +8,36 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-27
+
+### Added
+- Sweep stage. A definition with `source_config.sweep` is gathered by Metsuke
+  before the callback: fixed collector steps (`slack_waiting`, `gmail_waiting`,
+  `calendar_day`, `feed_entries`) run sequentially through the Trentina gateway
+  as a read-only `metsuke-sweep` profile, and their compact records are stored
+  on the run. The callback carries `sweep_status`, and the gatherer reads
+  records with the new `get_sweep_tool` instead of calling the sources itself.
+  The daily-briefing test runs of 2026-09-27 showed why: a gathering LLM left
+  to drive the sweep drifted every run, fired unbounded or refused calls, and
+  tripped its MCP client's breaker (RT #1469, RT #1505).
+- Reply-state logic in code: Slack threads and DMs are read up to a three-page
+  cap (longer or partly unreadable ones are marked `unverified`), an ask the
+  user already answered is dropped, and a reaction-only acknowledgement is kept.
+  Email uses the backend's own ownership analysis.
+- Results Trentina flags are stored as metadata only, text withheld.
+- `TRENTINA_GATEWAY_URL`, `METSUKE_SWEEP_TOKEN` (+ `_FILE`),
+  `METSUKE_SWEEP_TIMEOUT_SECONDS`.
+- `report_outputs.sweep_status` and `sweep_data` columns (additive migration).
+
+### Changed
+- `trigger_report_tool` on a swept definition returns immediately with
+  `dispatched: "after_sweep"`; the sweep and dispatch run in the background.
+  The scheduler does the same for swept definitions, so one slow sweep never
+  holds up other due reports.
+- The sweep refuses to send its bearer token over plain HTTP to anything but an
+  internal host (single-label service name, localhost, private IP).
+- `upsert_definition_tool` rejects an invalid sweep spec at save time.
+
 ## [1.1.0] - 2026-09-26
 
 ### Added

@@ -1,6 +1,6 @@
 [project]
 name = "mcp-metsuke-crunchtools"
-version = "1.1.0"
+version = "1.2.0"
 description = "Stateful reports catalog MCP server (definitions + gathered outputs)"
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
@@ -66,7 +66,7 @@ max-statements = 50
 max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "PLR2004", "ARG002"]
+"tests/*" = ["S101", "PLR2004", "ARG001", "ARG002", "ARG004", "ARG005"]
 
 [tool.mypy]
 python_version = "3.11"

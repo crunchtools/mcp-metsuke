@@ -11,6 +11,7 @@ from .models import (
     Finding,
     GetOutputParams,
     GetSpecParams,
+    GetSweepParams,
     ListOutputsParams,
     PruneOutputsParams,
     SaveOutputParams,
@@ -22,6 +23,7 @@ from .tools import (
     delete_output,
     get_output,
     get_spec,
+    get_sweep,
     list_outputs,
     list_reports,
     prune_outputs,
@@ -32,7 +34,7 @@ from .tools import (
 
 mcp = FastMCP(
     "mcp-metsuke-crunchtools",
-    version="1.1.0",
+    version="1.2.0",
     instructions=(
         "Stateful reports catalog with a built-in scheduler and run lifecycle. "
         "Metsuke stores report DEFINITIONS (what to gather, which agent owns the "
@@ -40,10 +42,14 @@ mcp = FastMCP(
         "each carrying a source URL for citation). Firing a definition — on its "
         "schedule or on demand via trigger_report — opens a RUN: Metsuke records "
         "a provisional row immediately (so a fire is never lost), hands the gatherer "
-        "a run_id, and lets only one run per report be in flight at a time. The "
-        "gatherer reads the spec with get_spec, sweeps the sources, and completes "
-        "its run by calling save_output with that run_id; a compiler later reads "
-        "the freshest completed output with get_output to draft a cited report."
+        "a run_id, and lets only one run per report be in flight at a time. For a "
+        "definition without a sweep, the gatherer reads the spec with get_spec, "
+        "sweeps the sources itself, and completes its run by calling save_output "
+        "with that run_id; a compiler later reads "
+        "the freshest completed output with get_output to draft a cited report. "
+        "A definition with a sweep is gathered by Metsuke itself first: when the "
+        "callback carries sweep_status, read the pre-shaped records with get_sweep "
+        "(index first, then one section at a time) instead of calling the sources."
     ),
 )
 
@@ -259,3 +265,51 @@ async def prune_outputs_tool(
         before_date=before_date,
     )
     return await prune_outputs(params.report_name, params.keep_last, params.before_date)
+
+
+@mcp.tool()
+async def get_sweep_tool(
+    run_id: str | None = None,
+    report_name: str | None = None,
+    section: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> dict[str, Any]:
+    """Read the pre-gathered sweep for a run.
+
+    Swept reports are gathered by Metsuke before the gatherer is called: fixed
+    source calls, reply-state checks and noise filters run in code, and the
+    results are stored on the run as sections of compact records. Call with no
+    section for the index (window, overall status, per-section record counts
+    and errors), then page through each section you need.
+
+    Args:
+        run_id: The run from the callback (preferred)
+        report_name: Alternatively, use this report's newest swept run
+        section: A section name from the index; omit for the index itself
+        page: 1-based page of records within the section
+        page_size: Records per page (max 50)
+
+    Returns:
+        Index (no section): ``{run_id, status, generated_at, window: {start,
+        end}, sections: {name: {collector, status, record_count, errors,
+        stats}}}``. ``status`` is ``ready``, ``partial`` or ``error``; a section
+        with errors names the source that was unavailable.
+
+        Section page: ``{run_id, section, status, errors, page, page_count,
+        total, records}``. Records are the collector's compact shape; a record
+        with ``flagged: true`` has its free text withheld.
+
+        An unknown run, a run without a sweep, or an unknown section raises a
+        not-found error.
+    """
+    params = GetSweepParams(
+        run_id=run_id,
+        report_name=report_name,
+        section=section,
+        page=page,
+        page_size=page_size,
+    )
+    return await get_sweep(
+        params.run_id, params.report_name, params.section, params.page, params.page_size
+    )

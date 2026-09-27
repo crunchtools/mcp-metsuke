@@ -20,8 +20,10 @@ uv run mcp-metsuke-crunchtools --transport streamable-http --port 8009
   `TRENTINA_ALERT_URL`. A `METSUKE_ALERT_TOKEN_FILE` path takes precedence (secret-file convention).
 - `METSUKE_SCHEDULER_POLL_SECONDS` — poll interval (default: `60`).
 - `METSUKE_SCHEDULER_ENABLED` — force the scheduler on/off; defaults to on when the callback is configured.
+- `TRENTINA_GATEWAY_URL` / `METSUKE_SWEEP_TOKEN` (+ `_FILE`) — Trentina gateway profile the sweep calls sources through.
+- `METSUKE_SWEEP_TIMEOUT_SECONDS` — upper bound on one sweep (default: `1200`).
 
-## Tools (9)
+## Tools (10)
 
 ### Definitions (4)
 - `list_reports_tool` — list all report definitions (each with its next fire time)
@@ -29,12 +31,13 @@ uv run mcp-metsuke-crunchtools --transport streamable-http --port 8009
 - `upsert_definition_tool` — create/update a definition (cron schedule + timezone)
 - `trigger_report_tool` — fire a report gather now, without waiting for its schedule
 
-### Outputs (5)
+### Outputs (6)
 - `save_output_tool` — gatherer writes findings here
 - `get_output_tool` — compiler reads freshest (or by-date) output
 - `list_outputs_tool` — browse the run history (metadata + finding_count, no payloads)
 - `delete_output_tool` — delete one saved output by id
 - `prune_outputs_tool` — bulk-prune a report's outputs (keep N newest, or drop before a date)
+- `get_sweep_tool` — read a swept run's pre-gathered records (index, or one section page)
 
 ## Development
 
@@ -51,7 +54,8 @@ podman build -f Containerfile . # Container
 - `config.py` — env-driven config (DB path, alert URL/token), SecretStr, `<VAR>_FILE` support
 - `database.py` — stdlib SQLite (WAL, FK on): `report_definitions` + `report_outputs`, with schema migrations
 - `models.py` — Pydantic v2 input validation (`extra="forbid"`, field limits, cron + timezone checks)
-- `scheduler.py` — background thread that fires due reports via the Trentina alert callback
+- `scheduler.py` — background thread that fires due reports via the Trentina alert callback, sweeping first when a definition has a sweep
+- `sweep/` — the sweep stage: `engine.py` (spec + runner), `collectors.py` (the named scripts), `parsers.py` (pure output parsers), `client.py` (Trentina gateway MCP client), `window.py`
 - `tools/` — pure async functions (definitions, outputs)
 - `server.py` — thin `@mcp.tool()` wrappers that validate then delegate
 
@@ -66,3 +70,10 @@ definition with `get_spec`, sweeps the sources, and writes findings with
 `get_output` — e.g. to compile a status summary. Which agents fill the
 gatherer/compiler roles, and how the callback endpoint is exposed to them, is
 the deployment's decision, not this server's.
+
+A definition with `source_config.sweep` is gathered by Metsuke first: the
+scheduler (or a background task, for `trigger_report`) runs the fixed collector
+steps through the Trentina gateway, stores the sweep on the run, and only then
+dispatches the callback with `sweep_status`. The gatherer reads records with
+`get_sweep` and never calls the sources itself. Collectors must stay bounded,
+sequential, and non-raising for source failures.

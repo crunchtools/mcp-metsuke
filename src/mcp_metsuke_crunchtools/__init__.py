@@ -12,7 +12,7 @@ import argparse
 import logging
 import threading
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 def _maybe_start_scheduler() -> None:

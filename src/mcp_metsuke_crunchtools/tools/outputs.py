@@ -131,3 +131,57 @@ async def prune_outputs(
         "deleted_count": len(deleted_ids),
         "deleted_ids": deleted_ids,
     }
+
+
+async def get_sweep(
+    run_id: str | None = None,
+    report_name: str | None = None,
+    section: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> dict[str, Any]:
+    """Read a run's sweep: the index, or one page of one section's records.
+
+    Args:
+        run_id: The run to read. Takes precedence over ``report_name``.
+        report_name: Used only when ``run_id`` is None: resolves to that
+            report's newest run carrying a sweep (in flight or finished).
+        section: A section name from the index; None returns the index.
+        page: 1-based page within the section (validated 1-1000 at the tool).
+        page_size: Records per page (validated 1-50 at the tool).
+
+    Returns:
+        Index (``section`` None): ``{run_id, status, generated_at, window,
+        errors, sections: {name: {collector, status, record_count, errors,
+        stats}}}``, computed without decoding any record.
+
+        Section page: ``{run_id, section, status, errors, page, page_count,
+        total, records}``. A page past the end has ``records == []`` with
+        ``total`` and ``page_count`` intact.
+
+    Raises:
+        RunNotFoundError: no run resolves, the run has no sweep, or the run
+            has no such section.
+    """
+    if run_id is None and report_name is not None:
+        run_id = db.latest_sweep_run_id(report_name)
+    if not run_id:
+        raise RunNotFoundError(f"(latest swept run of {report_name})")
+    if section is None:
+        index = db.get_sweep_index(run_id)
+        if index is None:
+            raise RunNotFoundError(run_id)
+        return {"run_id": run_id, **index}
+    sec = db.get_sweep_page(run_id, section, (page - 1) * page_size, page_size)
+    if sec is None:
+        raise RunNotFoundError(f"{run_id} section {section!r}")
+    return {
+        "run_id": run_id,
+        "section": section,
+        "status": sec["status"],
+        "errors": sec["errors"],
+        "page": page,
+        "page_count": max(1, -(-sec["total"] // page_size)),
+        "total": sec["total"],
+        "records": sec["records"],
+    }

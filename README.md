@@ -48,7 +48,7 @@ podman run --rm -v ~/.local/share/mcp-metsuke:/data:Z \
 claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 ```
 
-## Tools (9)
+## Tools (10)
 
 ### Definitions (4)
 
@@ -57,9 +57,9 @@ claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 | `list_reports` | List all report definitions in the catalog, each with its next scheduled fire time. |
 | `get_spec` | Return the gather prompt + source config for one definition. |
 | `upsert_definition` | Create or update a definition (name, prompt, owner, cron schedule, timezone, sources). |
-| `trigger_report` | Fire a report gather right now, without waiting for its schedule. |
+| `trigger_report` | Fire a report gather right now, without waiting for its schedule. For a swept definition it returns at once with `dispatched: "after_sweep"`; the sweep and the callback follow in the background. |
 
-### Outputs (5)
+### Outputs (6)
 
 | Tool | Description |
 |------|-------------|
@@ -68,6 +68,7 @@ claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 | `list_outputs` | Browse the run history — metadata + `finding_count` per saved gather, no payloads. |
 | `delete_output` | Delete one saved output by id. |
 | `prune_outputs` | Bulk-prune a report's outputs — keep the N newest, or drop those before a date. |
+| `get_sweep` | Read a swept run's pre-gathered records: the index, or one page of one section. |
 
 ## Environment Variables
 
@@ -78,6 +79,9 @@ claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 | `TRENTINA_ALERT_URL` | (none) | Base URL of the Trentina alert endpoint the scheduler POSTs gather callbacks to |
 | `METSUKE_ALERT_TOKEN` | (none) | Alert token identifying the reports profile; enables the scheduler when set with `TRENTINA_ALERT_URL` |
 | `METSUKE_ALERT_TOKEN_FILE` | (none) | Path whose contents override `METSUKE_ALERT_TOKEN` (container secret-file convention) |
+| `TRENTINA_GATEWAY_URL` | (none) | Trentina gateway MCP endpoint for the sweep profile, e.g. `http://mcp-trentina:8019/gateway/metsuke-sweep/mcp`. Plain HTTP is accepted only for internal hosts (single-label service names, localhost, private IPs); anything else must be HTTPS |
+| `METSUKE_SWEEP_TOKEN` | (none) | Bearer token for that profile; `METSUKE_SWEEP_TOKEN_FILE` overrides it |
+| `METSUKE_SWEEP_TIMEOUT_SECONDS` | `1200` | Upper bound on one run's sweep |
 | `METSUKE_SCHEDULER_POLL_SECONDS` | `60` | How often the scheduler checks for due reports |
 | `METSUKE_SCHEDULER_ENABLED` | (auto) | Force the scheduler on/off; defaults to on when the callback is configured |
 | `METSUKE_RUN_LOCK_TTL_SECONDS` | `1800` | How long an in-flight run holds the per-report lock before it is expired (self-heals a dead gatherer) |
@@ -96,3 +100,69 @@ The scheduler runs only under the `sse` and `streamable-http` transports (the lo
 ## License
 
 AGPL-3.0-or-later
+
+## Sweeps
+
+A definition can opt into a deterministic pre-gather by adding `sweep` to its
+`source_config`:
+
+```json
+{"sweep": {"timezone": "America/New_York", "window_hour": 6, "steps": [
+  {"section": "slack", "collector": "slack_waiting",
+   "options": {"user_id": "U9VN3S1ST", "handle": "smccarty"}},
+  {"section": "work_email", "collector": "gmail_waiting",
+   "options": {"backend": "gw-work", "account": "smccarty@redhat.com"}},
+  {"section": "calendar", "collector": "calendar_day",
+   "options": {"backend": "gw-work", "account": "smccarty@redhat.com"}},
+  {"section": "rss", "collector": "feed_entries",
+   "options": {"categories": {"1": 20, "5": 20}}}]}}
+```
+
+On fire, Metsuke runs each step in order through the Trentina gateway (as its
+own read-only profile), stores the results on the run, then dispatches the
+callback with `sweep_status`. The gatherer reads records with `get_sweep`
+instead of calling the sources, so the gathering LLM only selects, phrases and
+delivers. A failing step is recorded and the sweep continues. Results Trentina
+flags are stored as metadata only, with their text withheld.
+
+| Collector | What it produces |
+|-----------|------------------|
+| `slack_waiting` | DMs and @-mentions over a lookback, each thread or DM read for up to three pages (longer or partly unreadable ones are marked `unverified`); `answered` ones dropped, others marked `waiting` or `acknowledged` (reaction only), with `in_window` separating new asks from still-open ones |
+| `gmail_waiting` | Inbox threads in the window where the backend's ownership analysis says the ball is in the user's court; automated mail and bare calendar notices dropped, invitations kept |
+| `calendar_day` | The report day's meetings, pending invites over a lookahead, and hard overlaps |
+| `feed_entries` | Recent entries per feed category (read or unread), with a longer window after a weekend |
+
+### Collector options
+
+Every step is `{"section": "<name>", "collector": "<collector>", "options": {...}}`.
+Section names are `[a-z0-9_-]`, unique, up to 12 steps. Top-level `timezone`
+(IANA, default `America/New_York`) and `window_hour` (0-23, default 6) set the
+window: from that hour on the previous weekday until the run.
+
+| Collector | Option | Required | Default | Bounds |
+|-----------|--------|----------|---------|--------|
+| `slack_waiting` | `user_id` | yes | | 2-32 chars |
+| | `handle` | yes | | 1-64 chars |
+| | `backend` | | `slack` | ≤64 chars |
+| | `self_label` | | `you` | ≤64 chars |
+| | `lookback_days` | | 7 | 1-30 |
+| | `max_conversations` | | 40 | 1-100 |
+| | `workspace_url` | | `https://redhat-internal.slack.com` | ≤200 chars |
+| `gmail_waiting` | `backend` | yes | | e.g. `gw-work`, `gw-personal` |
+| | `account` | yes | | the mailbox address |
+| | `query_extra` | | `""` | ≤500 chars, appended to `in:inbox after:<window>` |
+| | `max_threads` | | 60 | 1-200 |
+| | `body_chars` | | 1200 | 0-4000 (0 = no body) |
+| | `link_template` | | Gmail `#all/{thread_id}` | ≤200 chars, or null |
+| `calendar_day` | `backend` | yes | | |
+| | `account` | yes | | |
+| | `timezone` | | `America/New_York` | IANA zone |
+| | `lookahead_days` | | 3 | 0-14 (pending invites) |
+| `feed_entries` | `categories` | yes | | 1-12 entries of `"<id>": <limit>`, id ≤9 digits, limit 1-100 |
+| | `backend` | | `feeds` | |
+| | `since_days` | | 1 | 1-30 |
+| | `since_days_after_weekend` | | 3 | 1-30 (Mondays and weekend runs) |
+
+Collectors are code in `sweep/collectors.py`, not configuration: a definition
+can only pick and parameterize them. A bad spec is rejected at
+`upsert_definition` time.

@@ -7,6 +7,12 @@ alert endpoint.
 Trentina resolves the profile by alert token, HMAC-signs the body, and forwards
 it to the owning gatherer agent's webhook. Metsuke therefore needs only the
 alert URL and token — never the HMAC secret.
+
+A definition with a ``source_config.sweep`` block is swept first: Metsuke runs
+its fixed collector steps through the Trentina gateway, stores the result on the
+run, and only then dispatches the callback (carrying ``sweep_status``). The
+gatherer then reads pre-shaped records with get_sweep instead of calling the
+sources itself.
 """
 
 from __future__ import annotations
@@ -24,11 +30,26 @@ from croniter import croniter
 from . import database as db
 from .config import Config, get_config
 from .errors import CallbackDispatchError, CallbackNotConfiguredError, RunInFlightError
+from .sweep import run_sweep, sweep_spec_of
+from .sweep.client import connect_gateway
 
 if TYPE_CHECKING:
     import sqlite3
 
 logger = logging.getLogger("mcp_metsuke.scheduler")
+
+_background: set[asyncio.Task[None]] = set()
+MAX_DETAIL_CHARS = 500
+MAX_CONCURRENT_SWEEPS = 2
+# One semaphore per event loop: the scheduler thread and the MCP server each run
+# their own loop, and an asyncio.Semaphore is bound to the loop that first uses it.
+_sweep_slots: dict[int, asyncio.Semaphore] = {}
+
+
+def _sweep_slot() -> asyncio.Semaphore:
+    loop_id = id(asyncio.get_running_loop())
+    return _sweep_slots.setdefault(loop_id, asyncio.Semaphore(MAX_CONCURRENT_SWEEPS))
+
 
 _HTTP_TIMEOUT = 30.0
 
@@ -71,6 +92,7 @@ async def _post_alert(
     name: str,
     run_id: str | None = None,
     spec: GatherSpec | None = None,
+    sweep_status: str | None = None,
 ) -> int:
     """POST the gather callback to the Trentina alert endpoint. Returns status.
 
@@ -90,6 +112,8 @@ async def _post_alert(
         run_id: The run this fire opened; omitted from the body when None.
         spec: ``{"gather_prompt", "source_config"}`` from the definition;
             omitted from the body when None.
+        sweep_status: ``ready``/``partial``/``error`` when the run was swept;
+            omitted when the definition has no sweep.
     """
     token = cfg.alert_token
     if not (cfg.trentina_alert_url and token):
@@ -101,6 +125,8 @@ async def _post_alert(
     if spec is not None:
         body["gather_prompt"] = spec["gather_prompt"]
         body["source_config"] = json.dumps(spec["source_config"] or {})
+    if sweep_status is not None:
+        body["sweep_status"] = sweep_status
     try:
         resp = await client.post(url, json=body, timeout=_HTTP_TIMEOUT)
         resp.raise_for_status()
@@ -109,7 +135,122 @@ async def _post_alert(
     return resp.status_code
 
 
-async def trigger_now(name: str, run_id: str | None = None, spec: GatherSpec | None = None) -> int:
+def _sweep_failure(detail: str) -> dict[str, Any]:
+    return {
+        "status": "error",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "window": None,
+        "errors": [detail[:500]],
+        "sections": {},
+    }
+
+
+async def sweep_run(
+    run_id: str,
+    source_config: dict[str, Any] | None,
+    conn: sqlite3.Connection | None = None,
+) -> str | None:
+    """Run the definition's sweep (if any), store it on the run, return its status.
+
+    Returns None for a definition without a sweep. Never raises: a bad spec, a
+    missing gateway config, a timeout or a transport failure are all stored as
+    an ``error`` sweep so the gatherer can say which source was unavailable.
+    """
+    try:
+        spec = sweep_spec_of(source_config)
+    except ValueError as exc:
+        sweep = _sweep_failure(f"invalid sweep spec: {exc}")
+        db.set_sweep(run_id, sweep, conn=conn)
+        return "error"
+    if spec is None:
+        return None
+    cfg = get_config()
+    token = cfg.sweep_token
+    if not (cfg.sweep_configured and token):
+        sweep = _sweep_failure("sweep not configured (TRENTINA_GATEWAY_URL / METSUKE_SWEEP_TOKEN)")
+    else:
+        try:
+            async with connect_gateway(cfg.trentina_gateway_url, token.get_secret_value()) as gw:
+                sweep = await asyncio.wait_for(
+                    run_sweep(spec, gw), timeout=cfg.sweep_timeout_seconds
+                )
+        except TimeoutError:
+            sweep = _sweep_failure(f"sweep timed out after {cfg.sweep_timeout_seconds}s")
+        except Exception as exc:
+            logger.exception("sweep for run %s failed", run_id)
+            sweep = _sweep_failure(f"{type(exc).__name__}: {exc}")
+    db.set_sweep(run_id, sweep, conn=conn)
+    logger.info("sweep for run %s finished: %s", run_id, sweep["status"])
+    return str(sweep["status"])
+
+
+async def sweep_and_dispatch(
+    name: str,
+    run_id: str,
+    definition: dict[str, Any],
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """Sweep a run, then dispatch its callback. Runs as a background task.
+
+    Both the manual trigger and the scheduler use it, so one slow sweep never
+    holds up the trigger response or other due reports. At most
+    ``MAX_CONCURRENT_SWEEPS`` sweeps run at once per loop; the rest wait. A
+    failure marks the run failed with the cause in its detail.
+    """
+    try:
+        # Waiting here is bounded: the per-report in-flight lock (begin_run)
+        # allows one open run per report, so queued sweeps never outnumber
+        # swept definitions.
+        async with _sweep_slot():
+            if not db.run_is_open(run_id, conn=conn):
+                logger.warning("run %s expired while queued for a sweep; dropped", run_id)
+                return
+            status = await sweep_run(run_id, definition.get("source_config"), conn=conn)
+        if not db.run_is_open(run_id, conn=conn):
+            # The lock TTL lapsed mid-sweep, so a newer run may own the report:
+            # dispatching now could produce a duplicate callback.
+            logger.warning("run %s expired during its sweep; not dispatching", run_id)
+            return
+        await trigger_now(name, run_id, gather_spec_of(definition), status)
+    except CallbackDispatchError as exc:
+        db.fail_run(run_id, f"callback dispatch failed: {exc}"[:MAX_DETAIL_CHARS], conn=conn)
+        logger.exception("failed to dispatch report '%s' after sweep", name)
+    except Exception as exc:
+        detail = f"sweep/dispatch crashed: {type(exc).__name__}: {exc}"
+        db.fail_run(run_id, detail[:MAX_DETAIL_CHARS], conn=conn)
+        logger.exception("sweep_and_dispatch crashed for '%s'", name)
+
+
+def dispatch_after_sweep(
+    name: str,
+    run_id: str,
+    definition: dict[str, Any],
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Start sweep-then-dispatch in the background if the definition has a sweep.
+
+    Returns True when it did (the caller must not dispatch), False for a
+    definition without a sweep. Shared by the scheduler and trigger_report.
+    """
+    if not _has_sweep(definition):
+        return False
+    start_background(sweep_and_dispatch(name, run_id, definition, conn=conn))
+    return True
+
+
+def start_background(coro: Any) -> None:
+    """Run a coroutine on the current loop, holding a reference until it ends."""
+    task: asyncio.Task[None] = asyncio.get_running_loop().create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+async def trigger_now(
+    name: str,
+    run_id: str | None = None,
+    spec: GatherSpec | None = None,
+    sweep_status: str | None = None,
+) -> int:
     """Fire a report gather immediately (the manual, API-driven path).
 
     Args:
@@ -117,10 +258,15 @@ async def trigger_now(name: str, run_id: str | None = None, spec: GatherSpec | N
         run_id: The run this fire opened.
         spec: The definition's gather_prompt and source_config, sent with the
             callback so the gatherer does not have to read them back.
+        sweep_status: The run's sweep status, when it was swept.
     """
     cfg = get_config()
     async with httpx.AsyncClient() as client:
-        return await _post_alert(client, cfg, name, run_id, spec)
+        return await _post_alert(client, cfg, name, run_id, spec, sweep_status)
+
+
+def _has_sweep(row: dict[str, Any]) -> bool:
+    return "sweep" in (row.get("source_config") or {})
 
 
 def _is_due(schedule: str, tzname: str, last_fired_at: str | None, started_at: datetime) -> bool:
@@ -165,6 +311,12 @@ async def _tick(
             logger.warning("skipping scheduled report '%s' — a run is already in flight", name)
             continue
         run_id = run["run_id"]
+        if dispatch_after_sweep(name, run_id, row, conn=conn):
+            # Sweeps take minutes: the slot is fired now and the sweep runs in
+            # the background so later due reports are not held up.
+            db.set_last_fired(conn, name, datetime.now(UTC).isoformat())
+            logger.info("fired scheduled report '%s' (run %s) -> sweeping", name, run_id)
+            continue
         try:
             code = await _post_alert(client, cfg, name, run_id, gather_spec_of(row))
             db.set_last_fired(conn, name, datetime.now(UTC).isoformat())
