@@ -208,6 +208,8 @@ class TestSlackIsAsk:
             "please sign off on the PRD",
             "let me know when you get a chance",
             "Would love your thoughts on the draft",
+            "Review the PR before merge.",
+            "Draft is up. Review when you can",
         ],
     )
     def test_asks(self, text: str) -> None:
