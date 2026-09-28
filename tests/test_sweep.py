@@ -76,6 +76,27 @@ OPENSHELL = [
         "reactions": [{"name": "+1", "users": [SCOTT], "count": 1}],
     },
 ]
+# #proj-siemensag-linuxone, oldest first: top-level mentions answered at top level.
+SIEMENS_CHANNEL = [
+    {
+        "user": "U0417TYM4SE",
+        "ts": "1790020486.616659",
+        "text": f"<@{SCOTT}> If you can have a look in the next days that would be great.",
+    },
+    {"user": SCOTT, "ts": "1790022124.271629", "text": "Is the draft up to date?"},
+    {"user": "U0417TYM4SE", "ts": "1790026763.337039", "text": "yes, or did you spot anything?"},
+    {
+        "user": "U0417TYM4SE",
+        "ts": "1790326732.144169",
+        "text": f"<@{SCOTT}> <@U2>, any feedback on it?",
+    },
+    {
+        "user": SCOTT,
+        "ts": "1790328222.927159",
+        "text": "Good morning. I'll take a look later today.",
+    },
+    {"user": SCOTT, "ts": "1790341189.343439", "text": "Who is the final editor for this paper?"},
+]
 CARLOS = [
     {"user": "U03QPSY9SEL", "ts": "1790286385.234649", "text": f"<@{SCOTT}> Delete the wording"},
 ]
@@ -180,6 +201,67 @@ class TestSlackReplyState:
         assert state is not None
         assert state.state == "waiting"
         assert "join the call" in state.last_ask["text"]
+
+    def test_earlier_open_ask_is_not_hidden_by_a_later_answered_one(self) -> None:
+        msgs = [
+            {"user": "U1", "ts": "1.0", "text": f"<@{SCOTT}> can you review the PRD?"},
+            {
+                "user": "U2",
+                "ts": "2.0",
+                "text": f"<@{SCOTT}> lunch Thursday?",
+                "reactions": [{"name": "+1", "users": [SCOTT], "count": 1}],
+            },
+        ]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        assert state is not None
+        assert state.state == "waiting"
+        assert state.last_ask["ts"] == "1.0"
+
+    def test_one_later_post_answers_every_earlier_ask(self) -> None:
+        # Scott's rule: once he has responded in a conversation, he is done with it.
+        msgs = [
+            {"user": "U1", "ts": "1.0", "text": f"<@{SCOTT}> can you review the PRD?"},
+            {"user": "U2", "ts": "2.0", "text": f"<@{SCOTT}> any feedback on the deck?"},
+            {"user": SCOTT, "ts": "3.0", "text": "Will look at both this afternoon."},
+        ]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        assert state is not None
+        assert state.state == "answered"
+
+    def test_answered_earlier_ask_yields_the_later_open_one(self) -> None:
+        msgs = [
+            {
+                "user": "U1",
+                "ts": "1.0",
+                "text": f"<@{SCOTT}> can you review the PRD?",
+                "reply_users": [SCOTT],
+            },
+            {"user": "U2", "ts": "2.0", "text": f"<@{SCOTT}> any feedback on the deck?"},
+        ]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        assert state is not None
+        assert state.state == "waiting"
+        assert state.last_ask["ts"] == "2.0"
+
+    def test_tail_from_ask_skips_unrelated_later_messages(self) -> None:
+        msgs = [
+            {"user": "U9", "ts": "0.5", "text": "unrelated earlier"},
+            {"user": "U1", "ts": "1.0", "text": f"<@{SCOTT}> any feedback?"},
+            *({"user": "U9", "ts": f"{i}.0", "text": f"unrelated {i}"} for i in range(2, 9)),
+        ]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        assert state is not None
+        tail = parsers.slack_tail_from(msgs, state.last_ask)
+        assert [m["ts"] for m in tail] == ["1.0", "2.0", "3.0", "4.0"]
+
+    def test_reply_in_the_asks_thread_answers_it(self) -> None:
+        # A top-level ask read from history carries reply_users for its thread.
+        msgs = [
+            {"user": "U1", "ts": "1.0", "text": f"<@{SCOTT}> thoughts?", "reply_users": [SCOTT]}
+        ]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        assert state is not None
+        assert state.state == "answered"
 
     def test_channel_mention_is_an_ask_without_phrasing(self) -> None:
         state = parsers.slack_reply_state(CARLOS, SCOTT, is_dm=False)
@@ -431,7 +513,13 @@ def _slack_route(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult
                         "U04MXP8G8MS",
                         "1790344306.678549",
                     ),
-                    _match("C0C4", "rhhi-support", "1790286385.234649", "U03QPSY9SEL", None),
+                    _match(
+                        "C0C4",
+                        "rhhi-support",
+                        "1790286385.234649",
+                        "U03QPSY9SEL",
+                        "1790286385.234649",
+                    ),
                 ],
                 "pagination": {"page_count": 1},
             }
@@ -492,6 +580,55 @@ class TestSlackCollector:
             assert record["flagged"] is True
             assert record["ask_text"] is None
             assert record["tail"] == []
+
+    @staticmethod
+    def _siemens_gateway(history: list[dict[str, Any]]) -> FakeGateway:
+        """Two top-level mentions in #proj-siemensag-linuxone (C0BHGEQU3KQ)."""
+        hits = [
+            _match("C0BH", "proj-siemensag-linuxone", ts, "U0417TYM4SE", None)
+            for ts in ("1790020486.616659", "1790326732.144169")
+        ]
+        handlers = {
+            "slack_search_messages": lambda args: _ok(
+                {
+                    "matches": [] if args["query"].startswith("to:@") else hits,
+                    "pagination": {"page_count": 1},
+                }
+            ),
+            "slack_get_channel_history": lambda args: _ok({"messages": history}),
+            "slack_get_user_info": lambda args: _ok({"user": {"real_name": "Maximilian Dargatz"}}),
+        }
+        return FakeGateway(lambda backend, tool, args: handlers[tool](args))
+
+    async def test_top_level_mentions_answered_in_the_channel(self) -> None:
+        # 2026-09-28: Scott answered at top level, never in a thread; the
+        # briefing listed Maximilian's asks as unanswered.
+        gw = self._siemens_gateway(SIEMENS_CHANNEL)
+        sweep = await run_sweep(SweepSpec(steps=[SLACK_STEP]), gw, now=NOW)
+        section = sweep["sections"]["slack"]
+        assert section["records"] == []
+        assert section["stats"]["conversations_found"] == 1
+        assert section["stats"]["dropped_answered"] == 1
+        (history,) = [a for _, t, a in gw.calls if t == "slack_get_channel_history"]
+        assert history["oldest"] == "1790020485.616659"
+        assert history["limit"] == 15
+        assert "slack_get_thread_replies" not in {t for _, t, _ in gw.calls}
+
+    async def test_top_level_mention_with_no_later_reply_waits(self) -> None:
+        unanswered = [m for m in SIEMENS_CHANNEL if float(m["ts"]) <= 1790326732.144169]
+        unrelated = [
+            {"user": "U9", "ts": f"179033000{i}.000100", "text": f"unrelated {i}"} for i in range(6)
+        ]
+        gw = self._siemens_gateway(unanswered + unrelated)
+        sweep = await run_sweep(SweepSpec(steps=[SLACK_STEP]), gw, now=NOW)
+        (record,) = sweep["sections"]["slack"]["records"]
+        assert record["state"] == "waiting"
+        assert record["ask_text"].endswith("any feedback on it?")
+        assert "thread_ts" not in record["permalink"]
+        # The tail starts at the ask, not at the channel's latest messages.
+        tail = [t["text"] for t in record["tail"]]
+        assert tail[0].endswith("any feedback on it?")
+        assert tail[1:] == ["unrelated 0", "unrelated 1", "unrelated 2"]
 
     async def test_dm_chatter_and_system_notices_are_dropped(self) -> None:
         hits = [
@@ -1422,7 +1559,11 @@ class TestSlackPageFailure:
                 {
                     "matches": []
                     if args["query"].startswith("to:@")
-                    else [_match("C0C4", "rhhi", "1790286385.234649", "U03QPSY9SEL", None)],
+                    else [
+                        _match(
+                            "C0C4", "rhhi", "1790286385.234649", "U03QPSY9SEL", "1790286385.234649"
+                        )
+                    ],
                     "pagination": {"page_count": 1},
                 }
             ),
@@ -1460,7 +1601,11 @@ class TestSlackPageFailure:
                 {
                     "matches": []
                     if args["query"].startswith("to:@")
-                    else [_match("C0C4", "rhhi", "1790290000.000100", "U03QPSY9SEL", None)],
+                    else [
+                        _match(
+                            "C0C4", "rhhi", "1790290000.000100", "U03QPSY9SEL", "1790286385.234649"
+                        )
+                    ],
                     "pagination": {"page_count": 1},
                 }
             ),
@@ -1611,7 +1756,11 @@ class TestEmptyPageWithCursor:
                 {
                     "matches": []
                     if args["query"].startswith("to:@")
-                    else [_match("C0C4", "rhhi", "1790286385.234649", "U03QPSY9SEL", None)],
+                    else [
+                        _match(
+                            "C0C4", "rhhi", "1790286385.234649", "U03QPSY9SEL", "1790286385.234649"
+                        )
+                    ],
                     "pagination": {"page_count": 1},
                 }
             ),
@@ -1704,7 +1853,11 @@ class TestFirstPageFailure:
                 {
                     "matches": []
                     if args["query"].startswith("to:@")
-                    else [_match("C0C4", "rhhi", "1790286385.234649", "U03QPSY9SEL", None)],
+                    else [
+                        _match(
+                            "C0C4", "rhhi", "1790286385.234649", "U03QPSY9SEL", "1790286385.234649"
+                        )
+                    ],
                     "pagination": {"page_count": 1},
                 }
             ),

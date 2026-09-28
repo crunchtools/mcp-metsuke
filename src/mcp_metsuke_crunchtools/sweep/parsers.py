@@ -88,11 +88,19 @@ def slack_reply_state(
     (tagging someone in a channel is directing it at them), or, in a DM, one
     that reads as a direct question or request (``slack_is_ask``): DM chatter
     such as "nice!" or "no worries" is not an ask. Once the user has responded,
-    a conversation stays done until someone asks again. Looking only at the
-    latest ask:
+    a conversation stays done until someone asks again. An ask is answered
+    when the user posted anywhere in the conversation after it, reacted to it,
+    or replied in its thread (``reply_users``, present when the ask is a
+    top-level message). A later post answers every earlier ask by design: the
+    user's rule is that once they have responded in a conversation, they are
+    done with it (RT #1469). Only a reaction or thread reply is specific to
+    one ask, so only those leave an earlier ask open.
 
-    - ``answered``: the user posted after it, or reacted to it.
-    - ``waiting``: neither.
+    - ``waiting``: some ask is unanswered; ``last_ask`` is the latest such one.
+    - ``answered``: every ask is answered; ``last_ask`` is the latest ask.
+
+    ``tail`` is the last four messages; see ``slack_tail_from`` for channel
+    history, where those may be unrelated.
 
     Returns None when nothing in the conversation asks the user anything.
     """
@@ -108,11 +116,26 @@ def slack_reply_state(
     asks = [m for m in ordered if directed(m)]
     if not asks:
         return None
-    last_ask = asks[-1]
-    ask_ts = float(last_ask.get("ts") or 0)
-    replied = any(m.get("user") == user_id and float(m.get("ts") or 0) > ask_ts for m in ordered)
-    state = "answered" if replied or slack_reacted_by(last_ask, user_id) else "waiting"
+
+    def answered(ask: dict[str, Any]) -> bool:
+        ask_ts = float(ask.get("ts") or 0)
+        return (
+            slack_reacted_by(ask, user_id)
+            or user_id in (ask.get("reply_users") or [])
+            or any(m.get("user") == user_id and float(m.get("ts") or 0) > ask_ts for m in ordered)
+        )
+
+    open_asks = [a for a in asks if not answered(a)]
+    last_ask = open_asks[-1] if open_asks else asks[-1]
+    state = "waiting" if open_asks else "answered"
     return ReplyState(last_ask=last_ask, state=state, tail=ordered[-4:])
+
+
+def slack_tail_from(messages: list[dict[str, Any]], ask: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ask and the three messages after it, oldest first."""
+    ask_ts = float(ask.get("ts") or 0)
+    ordered = sorted(messages, key=lambda m: float(m.get("ts") or 0))
+    return [m for m in ordered if float(m.get("ts") or 0) >= ask_ts][:4]
 
 
 def slack_page(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
