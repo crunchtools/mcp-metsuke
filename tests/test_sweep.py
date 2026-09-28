@@ -942,6 +942,21 @@ class TestFeedsCollector:
         assert rss["errors"] == []
         assert rss["records"] == []
 
+    async def test_wrapped_result_list_is_unwrapped(self) -> None:
+        entry = {
+            "id": 5350,
+            "title": "Experts Lead Experts",
+            "url": "https://x",
+            "feed_title": "SVPG",
+        }
+        gw = FakeGateway(lambda b, t, a: _ok({"result": [entry]}))
+        step = {"section": "rss", "collector": "feed_entries", "options": {"categories": {"1": 5}}}
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        records = sweep["sections"]["rss"]["records"]
+        assert [(r["entry_id"], r["title"], r["feed"]) for r in records] == [
+            (5350, "Experts Lead Experts", "SVPG")
+        ]
+
 
 # --- engine / validation --------------------------------------------------
 
