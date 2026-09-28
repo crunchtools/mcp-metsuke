@@ -128,6 +128,8 @@ class SlackOptions(BaseModel, extra="forbid"):
     user_id: str = Field(..., min_length=2, max_length=32)
     handle: str = Field(..., min_length=1, max_length=64)
     self_label: str = Field(default="you", min_length=1, max_length=64)
+    # Group DMs and channels: a question naming the user ("Scott, can you...") is an ask.
+    first_name: str | None = Field(default=None, min_length=1, max_length=64)
     lookback_days: int = Field(default=DEFAULT_LOOKBACK_DAYS, ge=1, le=MAX_LOOKBACK_DAYS)
     max_conversations: int = Field(default=DEFAULT_MAX_CONVERSATIONS, ge=1, le=MAX_CONVERSATIONS)
     workspace_url: str = Field(
@@ -348,7 +350,9 @@ async def _read_conversation(
         return None, False
     _count_ok(section)
 
-    state = parsers.slack_reply_state(messages, opts.user_id, conv["is_dm"])
+    # Only a one-to-one DM treats any question as an ask; group DMs need targeting.
+    one_to_one = conv["dm_user"] is not None
+    state = parsers.slack_reply_state(messages, opts.user_id, one_to_one, opts.first_name)
     if state is not None and not conv["is_dm"] and not conv["thread_ts"]:
         # Channel history: the latest messages may be unrelated to the ask.
         state.tail = parsers.slack_tail_from(messages, state.last_ask)

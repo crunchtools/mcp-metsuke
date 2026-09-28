@@ -31,6 +31,8 @@ _REQUEST = re.compile(
 )
 # Slack markup: <@U123>, <#C123|name>, <https://...?q=1|label>.
 _SLACK_MARKUP = re.compile(r"<[^<>]*>")
+# Quoted speech and blockquote lines: a question someone else asked, not an ask.
+_QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d|^\s*(?:>|&gt;).*$', re.MULTILINE)
 _THREAD_TS = re.compile(r"[?&]thread_ts=([0-9.]+)")
 
 
@@ -56,12 +58,14 @@ def slack_is_bot(message: dict[str, Any]) -> bool:
 def slack_is_ask(text: str | None) -> bool:
     """True when a message reads as a direct question or request.
 
-    Slack markup (mentions, links) is removed first, so a URL's ``?`` is not a
-    question, and a curly apostrophe is normalized so "Let's talk" still matches.
+    Slack markup (mentions, links) and quoted text (double-quoted spans and
+    blockquote lines) are removed first, so a URL's ``?`` or a quoted question
+    is not an ask, and a curly apostrophe is normalized so "Let's talk" still
+    matches.
     """
     if not text:
         return False
-    plain = _SLACK_MARKUP.sub(" ", text).replace("\u2019", "'")
+    plain = _QUOTED.sub(" ", _SLACK_MARKUP.sub(" ", text)).replace("\u2019", "'")
     return "?" in plain or bool(_REQUEST.search(plain))
 
 
@@ -80,38 +84,48 @@ class ReplyState:
 
 
 def slack_reply_state(
-    messages: list[dict[str, Any]], user_id: str, is_dm: bool
+    messages: list[dict[str, Any]], user_id: str, is_dm: bool, first_name: str | None = None
 ) -> ReplyState | None:
     """Decide whether ``user_id`` still owes a reply in a conversation.
 
-    An *ask* is a human message from someone else that @-mentions the user
-    (tagging someone in a channel is directing it at them), or, in a DM, one
-    that reads as a direct question or request (``slack_is_ask``): DM chatter
-    such as "nice!" or "no worries" is not an ask. Once the user has responded,
-    a conversation stays done until someone asks again. An ask is answered
-    when the user posted anywhere in the conversation after it, reacted to it,
-    or replied in its thread (``reply_users``, present when the ask is a
-    top-level message). A later post answers every earlier ask by design: the
-    user's rule is that once they have responded in a conversation, they are
-    done with it (RT #1469). Only a reaction or thread reply is specific to
-    one ask, so only those leave an earlier ask open.
+       An *ask* is a human message from someone else, directed at the user, that
+       reads as one:
 
-    - ``waiting``: some ask is unanswered; ``last_ask`` is the latest such one.
-    - ``answered``: every ask is answered; ``last_ask`` is the latest ask.
+       - an @-mention of the user (tagging someone is directing it at them);
+       - in a one-to-one DM (``is_dm``), a message that reads as a direct
+         question or request (``slack_is_ask``); chatter such as "nice!" is not;
+       - elsewhere (group DMs, channels), a question or request that addresses
+         the user by ``first_name`` ("Scott, can you review?"); a question to the
+         group at large is not an ask of the user.
+    Once the user has responded,
+       a conversation stays done until someone asks again. An ask is answered
+       when the user posted anywhere in the conversation after it, reacted to it,
+       or replied in its thread (``reply_users``, present when the ask is a
+       top-level message). A later post answers every earlier ask by design: the
+       user's rule is that once they have responded in a conversation, they are
+       done with it (RT #1469). Only a reaction or thread reply is specific to
+       one ask, so only those leave an earlier ask open.
 
-    ``tail`` is the last four messages; see ``slack_tail_from`` for channel
-    history, where those may be unrelated.
+       - ``waiting``: some ask is unanswered; ``last_ask`` is the latest such one.
+       - ``answered``: every ask is answered; ``last_ask`` is the latest ask.
 
-    Returns None when nothing in the conversation asks the user anything.
+       ``tail`` is the last four messages; see ``slack_tail_from`` for channel
+       history, where those may be unrelated.
+
+       Returns None when nothing in the conversation asks the user anything.
     """
     ordered = sorted(messages, key=lambda m: float(m.get("ts") or 0))
     mention = f"<@{user_id}>"
+    named = re.compile(rf"\b{re.escape(first_name)}\b", re.IGNORECASE) if first_name else None
 
     def directed(msg: dict[str, Any]) -> bool:
         if msg.get("user") == user_id or slack_is_bot(msg):
             return False
         text = msg.get("text") or ""
-        return mention in text or (is_dm and slack_is_ask(text))
+        if mention in text:
+            return True
+        addressed = is_dm or bool(named and named.search(_QUOTED.sub(" ", text)))
+        return addressed and slack_is_ask(text)
 
     asks = [m for m in ordered if directed(m)]
     if not asks:

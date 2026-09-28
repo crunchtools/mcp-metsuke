@@ -38,7 +38,12 @@ from mcp_metsuke_crunchtools.sweep.client import (
     connect_gateway,
     result_from_blocks,
 )
-from mcp_metsuke_crunchtools.sweep.collectors import GmailOptions, _drop_reason, _user_ids
+from mcp_metsuke_crunchtools.sweep.collectors import (
+    GmailOptions,
+    SlackOptions,
+    _drop_reason,
+    _user_ids,
+)
 from mcp_metsuke_crunchtools.sweep.window import next_weekday, previous_weekday_at
 from mcp_metsuke_crunchtools.tools import (
     get_sweep,
@@ -254,6 +259,24 @@ class TestSlackReplyState:
         tail = parsers.slack_tail_from(msgs, state.last_ask)
         assert [m["ts"] for m in tail] == ["1.0", "2.0", "3.0", "4.0"]
 
+    def test_group_dm_question_to_the_group_is_not_an_ask(self) -> None:
+        # Prarit, 2026-09-24, group DM: a question to everyone, not to Scott.
+        msgs = [{"user": "U1", "ts": "1.0", "text": "Uh ... isn't Aquasec on the west coast?"}]
+        assert parsers.slack_reply_state(msgs, SCOTT, is_dm=False, first_name="Scott") is None
+
+    @pytest.mark.parametrize(
+        "text", ["Scott, can you review the doc?", f"<@{SCOTT}> lunch Thursday?"]
+    )
+    def test_group_dm_ask_that_targets_the_user_waits(self, text: str) -> None:
+        msgs = [{"user": "U1", "ts": "1.0", "text": text}]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False, first_name="Scott")
+        assert state is not None
+        assert state.state == "waiting"
+
+    def test_name_inside_a_quote_does_not_target_the_user(self) -> None:
+        msgs = [{"user": "U1", "ts": "1.0", "text": 'He said "Scott, can you review?" to me'}]
+        assert parsers.slack_reply_state(msgs, SCOTT, is_dm=False, first_name="Scott") is None
+
     def test_reply_in_the_asks_thread_answers_it(self) -> None:
         # A top-level ask read from history carries reply_users for its thread.
         msgs = [
@@ -267,6 +290,37 @@ class TestSlackReplyState:
         state = parsers.slack_reply_state(CARLOS, SCOTT, is_dm=False)
         assert state is not None
         assert state.state == "waiting"
+
+
+class TestSlackFirstName:
+    @pytest.mark.parametrize("bad", ["", "x" * 65])
+    def test_first_name_is_bounded(self, bad: str) -> None:
+        with pytest.raises(ValidationError):
+            SlackOptions(user_id=SCOTT, handle="smccarty", first_name=bad)
+
+    async def test_group_dm_question_needs_targeting(self) -> None:
+        hit = {
+            "channel": {"id": "G1", "is_mpim": True},
+            "user": "U1",
+            "ts": "1790343691.861819",
+            "text": "Uh ... isn't Aquasec on the west coast?",
+            "permalink": "https://x.slack.com/archives/G1/p1790343691861819",
+        }
+        handlers = {
+            "slack_search_messages": lambda args: _ok(
+                {
+                    "matches": [hit] if args["query"].startswith("to:@") else [],
+                    "pagination": {"page_count": 1},
+                }
+            ),
+            "slack_get_channel_history": lambda args: _ok({"messages": [hit]}),
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        step = {**SLACK_STEP, "options": {**SLACK_STEP["options"], "first_name": "Scott"}}
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        section = sweep["sections"]["slack"]
+        assert section["records"] == []
+        assert section["stats"]["dropped_no_ask"] == 1
 
 
 class TestSlackUserIds:
@@ -290,6 +344,7 @@ class TestSlackIsAsk:
             "please sign off on the PRD",
             "let me know when you get a chance",
             "Would love your thoughts on the draft",
+            'He said "no way" but can you check?',
             "Review the PR before merge.",
             "Draft is up. Review when you can",
             "Any concerns? Review the PR before merge.",
@@ -309,6 +364,10 @@ class TestSlackIsAsk:
             "97 survey answers are in: Chasing the last ones to reach 100",
             # Carlos, 2026-09-24: a remark that mentions feedback, not a request for it.
             "Also, feedback to you, emotions run high on the Hummingbird topic",
+            # ...and quotes someone else's question.
+            'one of my POs was like "Why does Scott want us to drop all work in AppStreams?"',
+            "one of my POs was like \u201cWhy does Scott want this?\u201d",
+            "&gt; can you review this?\nthat was the old ask",
             "I did a review of the kernel build times",
             "Review of the kernel build times starts Monday.",
             "Review is pending",
