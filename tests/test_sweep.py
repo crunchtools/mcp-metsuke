@@ -590,13 +590,19 @@ class TestSlackCollector:
 
     async def test_top_level_mention_with_no_later_reply_waits(self) -> None:
         unanswered = [m for m in SIEMENS_CHANNEL if float(m["ts"]) <= 1790326732.144169]
-        unanswered = [m for m in unanswered if m["ts"] != "1790328222.927159"]
-        gw = self._siemens_gateway(unanswered)
+        unrelated = [
+            {"user": "U9", "ts": f"179033000{i}.000100", "text": f"unrelated {i}"} for i in range(6)
+        ]
+        gw = self._siemens_gateway(unanswered + unrelated)
         sweep = await run_sweep(SweepSpec(steps=[SLACK_STEP]), gw, now=NOW)
         (record,) = sweep["sections"]["slack"]["records"]
         assert record["state"] == "waiting"
         assert record["ask_text"].endswith("any feedback on it?")
         assert "thread_ts" not in record["permalink"]
+        # The tail starts at the ask, not at the channel's latest messages.
+        tail = [t["text"] for t in record["tail"]]
+        assert tail[0].endswith("any feedback on it?")
+        assert tail[1:] == ["unrelated 0", "unrelated 1", "unrelated 2"]
 
     async def test_dm_chatter_and_system_notices_are_dropped(self) -> None:
         hits = [
