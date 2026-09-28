@@ -8,6 +8,26 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-28
+
+### Changed (breaking)
+Both changes alter `slack_waiting`'s default output for existing definitions.
+- `slack_waiting` counts only direct asks: an @-mention, or a DM message that
+  reads as a question or request (`slack_is_ask`). DM chatter ("nice!", "no
+  worries") no longer opens a conversation, and chatter after the user's reply
+  no longer reopens one (`dropped_no_ask`).
+- A reaction from the user now answers an ask. The `acknowledged` state is gone.
+
+### Added
+- `gmail_waiting` options `lookback_days`, `min_age_hours` (`dropped_fresh`)
+  and `priority_senders` (`priority: true` on matching records).
+
+### Fixed
+- Slack's system user is recognized as `USLACK` (Enterprise Grid) as well as
+  `USLACKBOT`, or by its `slack` profile. Its notices are not asks, and it is
+  no longer sent to `slack_get_user_info`, whose error marked the section
+  `partial` on every run.
+
 ## [1.2.3] - 2026-09-27
 
 ### Fixed

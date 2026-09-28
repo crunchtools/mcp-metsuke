@@ -38,7 +38,7 @@ from mcp_metsuke_crunchtools.sweep.client import (
     connect_gateway,
     result_from_blocks,
 )
-from mcp_metsuke_crunchtools.sweep.collectors import _drop_reason
+from mcp_metsuke_crunchtools.sweep.collectors import GmailOptions, _drop_reason, _user_ids
 from mcp_metsuke_crunchtools.sweep.window import next_weekday, previous_weekday_at
 from mcp_metsuke_crunchtools.tools import (
     get_sweep,
@@ -110,10 +110,11 @@ class TestSlackReplyState:
         assert state is not None
         assert state.state == "answered"
 
-    def test_reaction_only_is_acknowledged(self) -> None:
+    def test_reaction_counts_as_answered(self) -> None:
+        # Scott's thumbs-up on "Let's talk first" is his response: done.
         state = parsers.slack_reply_state(OPENSHELL, SCOTT, is_dm=False)
         assert state is not None
-        assert state.state == "acknowledged"
+        assert state.state == "answered"
         assert "talk first" in state.last_ask["text"]
 
     def test_unanswered_mention_is_waiting(self) -> None:
@@ -131,9 +132,99 @@ class TestSlackReplyState:
         assert state is not None
         assert state.state == "waiting"
 
-    def test_slackbot_never_asks(self) -> None:
-        msgs = [{"user": "USLACKBOT", "ts": "1.0", "text": "You have been removed from #x"}]
+    @pytest.mark.parametrize(
+        "sender",
+        [
+            {"user": "USLACKBOT"},
+            # Enterprise Grid's system user, as returned for DM D0BHM3DTYUC.
+            {"user": "USLACK"},
+            {"user": "U0NEWSYS1", "user_profile": {"name": "slack", "real_name": "Slack"}},
+        ],
+    )
+    def test_slack_system_user_never_asks(self, sender: dict[str, Any]) -> None:
+        msg = {**sender, "ts": "1.0", "text": "You have been removed from #x. Rejoin?"}
+        assert parsers.slack_is_bot(msg)
+        assert parsers.slack_reply_state([msg], SCOTT, is_dm=True) is None
+
+    @pytest.mark.parametrize(
+        "text", ["nice!", "no worries", "Glad to read :). We are well.", "HA! I wish I could"]
+    )
+    def test_dm_chatter_is_not_an_ask(self, text: str) -> None:
+        msgs = [{"user": "U1", "ts": "1.0", "text": text}]
         assert parsers.slack_reply_state(msgs, SCOTT, is_dm=True) is None
+
+    def test_dm_request_without_question_mark_is_waiting(self) -> None:
+        msgs = [{"user": "U1", "ts": "1.0", "text": "Let\u2019s find a few minutes to talk"}]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=True)
+        assert state is not None
+        assert state.state == "waiting"
+
+    def test_chatter_after_reply_keeps_it_answered(self) -> None:
+        # Valentin: an ask Scott answered, then a pleasantry. Nothing new was asked.
+        msgs = [
+            {"user": "U1", "ts": "1.0", "text": "How are you and the girls?"},
+            {"user": SCOTT, "ts": "2.0", "text": "We are well, I hope you and Cami are well!"},
+            {"user": "U1", "ts": "3.0", "text": "Glad to read :). We are well."},
+        ]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=True)
+        assert state is not None
+        assert state.state == "answered"
+
+    def test_new_ask_after_reply_is_waiting(self) -> None:
+        msgs = [
+            {"user": "U1", "ts": "1.0", "text": "Can you review the doc?"},
+            {"user": SCOTT, "ts": "2.0", "text": "Done."},
+            {"user": "U1", "ts": "3.0", "text": "Would you be able to join the call?"},
+        ]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=True)
+        assert state is not None
+        assert state.state == "waiting"
+        assert "join the call" in state.last_ask["text"]
+
+    def test_channel_mention_is_an_ask_without_phrasing(self) -> None:
+        state = parsers.slack_reply_state(CARLOS, SCOTT, is_dm=False)
+        assert state is not None
+        assert state.state == "waiting"
+
+
+class TestSlackUserIds:
+    def test_system_users_and_self_are_not_looked_up(self) -> None:
+        records = [
+            {"_asker": "USLACK", "_conv": {"dm_user": "USLACK"}, "tail": [{"_author": "USLACK"}]},
+            {"_asker": "U1", "_conv": {"dm_user": None}, "tail": [{"_author": SCOTT}]},
+            {"_asker": "USLACKBOT", "_conv": {"dm_user": None}, "tail": [{"_author": "U1"}]},
+        ]
+        assert _user_ids(records, SCOTT) == ["U1"]
+
+
+class TestSlackIsAsk:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "any feedback on it?",
+            "Would you be able to join the design discussion in 90 minutes",
+            "If you can have a look in the next days that would be great",
+            "Let\u2019s talk first.",
+            "please sign off on the PRD",
+            "let me know when you get a chance",
+        ],
+    )
+    def test_asks(self, text: str) -> None:
+        assert parsers.slack_is_ask(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "nice!",
+            "no worries",
+            "97 survey answers are in: Chasing the last ones to reach 100",
+            "see <https://x.slack.com/archives/C1/p1?thread_ts=1.2|this>",
+            "",
+            None,
+        ],
+    )
+    def test_not_asks(self, text: str | None) -> None:
+        assert not parsers.slack_is_ask(text)
 
     def test_bots_never_ask(self) -> None:
         msgs = [{"user": None, "username": "shadowbot", "ts": "1.0", "text": f"Hi <@{SCOTT}>"}]
@@ -342,6 +433,14 @@ def _slack_route(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult
     raise AssertionError(f"unexpected tool {tool}")
 
 
+def _slack_route_two_waiting(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult:
+    """``_slack_route`` with Ronald's ask left unreacted: two waiting records."""
+    if tool == "slack_get_thread_replies" and args["thread_ts"] == "1790344306.678549":
+        unreacted = {k: v for k, v in OPENSHELL[2].items() if k != "reactions"}
+        return _ok({"messages": [*OPENSHELL[:2], unreacted]})
+    return _slack_route(backend, tool, args)
+
+
 SLACK_STEP = {
     "section": "slack",
     "collector": "slack_waiting",
@@ -355,12 +454,10 @@ class TestSlackCollector:
         sweep = await run_sweep(SweepSpec(steps=[SLACK_STEP]), gw, now=NOW)
         section = sweep["sections"]["slack"]
         assert section["status"] == "ok"
-        assert section["stats"]["dropped_answered"] == 1  # ICICI
+        # ICICI (replied) and OpenShell (reacted to "Let's talk first").
+        assert section["stats"]["dropped_answered"] == 2
         by_asker = {r["asker"]: r for r in section["records"]}
-        assert set(by_asker) == {"Ronald Pacheco", "Carlos O'Donell"}
-        assert by_asker["Ronald Pacheco"]["state"] == "acknowledged"
-        assert by_asker["Ronald Pacheco"]["in_window"] is True
-        assert by_asker["Ronald Pacheco"]["where"] == "#team-rhel-pm"
+        assert set(by_asker) == {"Carlos O'Donell"}
         # Carlos asked Thursday, before the Friday 06:00 window: the "still open" tail.
         assert by_asker["Carlos O'Donell"]["state"] == "waiting"
         assert by_asker["Carlos O'Donell"]["in_window"] is False
@@ -379,6 +476,44 @@ class TestSlackCollector:
             assert record["flagged"] is True
             assert record["ask_text"] is None
             assert record["tail"] == []
+
+    async def test_dm_chatter_and_system_notices_are_dropped(self) -> None:
+        hits = [
+            {
+                "channel": {"id": "D1", "is_im": True, "user": "U7"},
+                "user": "U7",
+                "ts": "1790343691.861819",
+                "text": "nice!",
+                "permalink": "https://x.slack.com/archives/D1/p1790343691861819",
+            },
+            {
+                "channel": {"id": "D2", "is_im": True, "user": "USLACK"},
+                "user": "USLACK",
+                "ts": "1790364278.764279",
+                "text": "You have been removed from #team-cfp-rating-committee",
+                "permalink": "https://x.slack.com/archives/D2/p1790364278764279",
+            },
+        ]
+        handlers = {
+            "slack_search_messages": lambda args: _ok(
+                {
+                    "matches": hits if args["query"].startswith("to:@") else [],
+                    "pagination": {"page_count": 1},
+                }
+            ),
+            "slack_get_channel_history": lambda args: _ok(
+                {"messages": [h for h in hits if h["channel"]["id"] == args["channel_id"]]}
+            ),
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        sweep = await run_sweep(SweepSpec(steps=[SLACK_STEP]), gw, now=NOW)
+        section = sweep["sections"]["slack"]
+        assert section["status"] == "ok"
+        assert section["records"] == []
+        # The system notice never becomes a conversation; "nice!" is read and dropped.
+        assert section["stats"]["conversations_found"] == 1
+        assert section["stats"]["dropped_no_ask"] == 1
+        assert "slack_get_user_info" not in {t for _, t, _ in gw.calls}
 
     async def test_search_failure_is_recorded_not_raised(self) -> None:
         gw = FakeGateway(lambda b, t, a: GatewayResult(text="", error="boom"))
@@ -433,6 +568,64 @@ class TestGmailCollector:
         assert section["stats"]["dropped_not_owed"] == 1
         assert section["stats"]["dropped_noise"] == 1
         assert section["stats"]["dropped_old"] == 1
+
+    async def test_waiting_mail_lookback_min_age_and_priority(self) -> None:
+        analyses = {
+            **GMAIL_ANALYSES,
+            # Owed, but only 2 hours old at NOW: the user handles fresh mail himself.
+            "t5": {
+                "last_sender": "Pascal Fenkam <pfenkam@redhat.com>",
+                "ball_in_court_of": "user",
+                "last_timestamp": "2026-09-27T10:00:00+00:00",
+            },
+        }
+        handlers = {
+            "search_gmail_messages": lambda args: _ok(
+                "".join(f"Thread ID: {t}\n" for t in analyses)
+            ),
+            "get_gmail_thread_content": lambda args: _ok(
+                {"content": THREAD_CONTENT, "analysis": analyses[args["thread_id"]]}
+            ),
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        step = {
+            "section": "email",
+            "collector": "gmail_waiting",
+            "options": {
+                "backend": "gw-work",
+                "account": "smccarty@redhat.com",
+                "lookback_days": 7,
+                "min_age_hours": 24,
+                "priority_senders": ["MOHAN SHASH"],
+            },
+        }
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        section = sweep["sections"]["email"]
+        (search,) = [a for _, t, a in gw.calls if t == "search_gmail_messages"]
+        assert search["query"].startswith("in:inbox after:2026/09/20")
+        by_id = {r["thread_id"]: r for r in section["records"]}
+        # t4 (Sept 24) is inside the 7-day lookback though before the report window.
+        assert set(by_id) == {"t1", "t4"}
+        assert by_id["t1"]["priority"] is True
+        assert by_id["t4"]["priority"] is False
+        assert section["stats"]["dropped_fresh"] == 1
+        assert section["stats"]["dropped_old"] == 0
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"lookback_days": 0},
+            {"lookback_days": 31},
+            {"min_age_hours": -1},
+            {"min_age_hours": 169},
+            {"priority_senders": [" "]},
+            {"priority_senders": ["x" * 101]},
+            {"priority_senders": ["a"] * 21},
+        ],
+    )
+    def test_waiting_options_are_bounded(self, bad: dict[str, Any]) -> None:
+        with pytest.raises(ValidationError):
+            GmailOptions(backend="gw-work", account="smccarty@redhat.com", **bad)
 
 
 class TestCalendarCollector:
@@ -542,7 +735,9 @@ class TestSweepStorage:
         monkeypatch.setenv("TRENTINA_GATEWAY_URL", "http://gw/gateway/metsuke-sweep/mcp")
         monkeypatch.setenv("METSUKE_SWEEP_TOKEN", "t")
         monkeypatch.setattr(config_mod, "_config", None)  # re-read the env set above
-        monkeypatch.setattr(scheduler, "connect_gateway", _gateway_factory(_slack_route))
+        monkeypatch.setattr(
+            scheduler, "connect_gateway", _gateway_factory(_slack_route_two_waiting)
+        )
 
         status = await scheduler.sweep_run(run["run_id"], {"sweep": {"steps": [SLACK_STEP]}})
         assert status == "ready"
@@ -647,7 +842,9 @@ class TestScheduledSweep:
 
         _configure_sweep(monkeypatch)
         monkeypatch.setattr(scheduler, "_is_due", lambda *_a: True)
-        monkeypatch.setattr(scheduler, "connect_gateway", _gateway_factory(_slack_route))
+        monkeypatch.setattr(
+            scheduler, "connect_gateway", _gateway_factory(_slack_route_two_waiting)
+        )
         dispatched = _capture_dispatch(monkeypatch)
         db.upsert_definition("daily", "compose", "kagetora", "0 6 * * 1-5", TZ, SWEPT_CONFIG)
         _FakeClient.posted.clear()
@@ -1050,7 +1247,9 @@ class TestFlagAcrossPages:
                     "response_metadata": {"next_cursor": "c1"},
                 }
                 return _ok(body, flagged=True)
-            return _ok({"messages": OPENSHELL[2:], "has_more": False})
+            # Ronald's ask without Scott's reaction, so the thread is still waiting.
+            unreacted = {k: v for k, v in OPENSHELL[2].items() if k != "reactions"}
+            return _ok({"messages": [unreacted], "has_more": False})
 
         handlers = {
             "slack_search_messages": lambda args: _ok(
@@ -1230,14 +1429,17 @@ class TestDmPaging:
             cursors.append(args.get("cursor"))
             more = {"has_more": True, "response_metadata": {"next_cursor": f"h{len(cursors)}"}}
             return _ok(
-                {"messages": [{"user": "U7", "ts": "1790300000.000100", "text": "hi"}], **more}
+                {
+                    "messages": [{"user": "U7", "ts": "1790300000.000100", "text": "got a sec?"}],
+                    **more,
+                }
             )
 
         dm_hit = {
             "channel": {"id": "D1", "is_im": True, "user": "U7"},
             "user": "U7",
             "ts": "1790300000.000100",
-            "text": "hi",
+            "text": "got a sec?",
             "permalink": "https://x.slack.com/archives/D1/p1790300000000100",
         }
         handlers = {

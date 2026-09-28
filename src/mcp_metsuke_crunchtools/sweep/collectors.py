@@ -61,6 +61,9 @@ MAX_THREADS = 200
 DEFAULT_BODY_CHARS = 1200
 MAX_BODY_CHARS = 4000
 MAX_QUERY_EXTRA = 500
+MAX_MIN_AGE_HOURS = 168
+MAX_PRIORITY_SENDERS = 20
+MAX_PRIORITY_SENDER_LENGTH = 100
 
 # Calendar
 DEFAULT_LOOKAHEAD_DAYS = 3
@@ -137,8 +140,10 @@ async def slack_waiting(
 
     Searches DMs (``to:@handle``) and channel mentions (``<@user_id>``) over
     ``lookback_days``, reads each conversation's current state, and keeps only
-    ones where the latest ask is ``waiting`` or ``acknowledged`` (or
-    ``unverified``, when a thread was longer than the pages read). ``in_window``
+    ones where the latest direct ask is ``waiting`` (or ``unverified``, when a
+    thread was longer than the pages read). Conversations with no direct ask
+    count as ``dropped_no_ask``; answered or reacted-to ones as
+    ``dropped_answered``. ``in_window``
     marks asks newer than the report window; older ones are the "still open"
     tail. People are resolved to names once per distinct user, after every
     conversation is read, capped at ``MAX_NAME_LOOKUPS`` calls.
@@ -147,6 +152,7 @@ async def slack_waiting(
     section = _section("slack_waiting")
     conversations = await _search_conversations(gw, opts, now, section)
     section["stats"]["conversations_found"] = len(conversations)
+    section["stats"]["dropped_no_ask"] = 0
 
     ordered = sorted(conversations.values(), key=lambda c: c["latest_ts"], reverse=True)
     dropped_answered = 0
@@ -334,6 +340,7 @@ async def _read_conversation(
 
     state = parsers.slack_reply_state(messages, opts.user_id, conv["is_dm"])
     if state is None:
+        section["stats"]["dropped_no_ask"] += 1
         return None, False
     if not complete:
         # A reply may sit beyond the pages read: neither "answered" nor
@@ -378,7 +385,7 @@ def _user_ids(records: list[dict[str, Any]], self_id: str) -> list[str]:
         ids = [record["_asker"], record["_conv"]["dm_user"]]
         ids += [t["_author"] for t in record["tail"]]
         for uid in ids:
-            if uid and uid != self_id:
+            if uid and uid != self_id and uid not in parsers.SLACK_SYSTEM_USERS:
                 seen.setdefault(uid, None)
     return list(seen)
 
@@ -436,6 +443,22 @@ class GmailOptions(BaseModel, extra="forbid"):
     link_template: str | None = Field(
         default="https://mail.google.com/mail/u/0/#all/{thread_id}", max_length=200
     )
+    # Search this many days back instead of the report window.
+    lookback_days: int | None = Field(default=None, ge=1, le=MAX_LOOKBACK_DAYS)
+    # Drop threads whose last message is newer than this: the user handles fresh mail.
+    min_age_hours: int = Field(default=0, ge=0, le=MAX_MIN_AGE_HOURS)
+    # Case-insensitive substrings of the From header that mark a record priority.
+    priority_senders: list[str] = Field(default_factory=list, max_length=MAX_PRIORITY_SENDERS)
+
+    @field_validator("priority_senders")
+    @classmethod
+    def _check_priority_senders(cls, value: list[str]) -> list[str]:
+        for sender in value:
+            if not sender.strip() or len(sender) > MAX_PRIORITY_SENDER_LENGTH:
+                raise ValueError(
+                    f"priority_senders entries must be 1-{MAX_PRIORITY_SENDER_LENGTH} characters"
+                )
+        return value
 
 
 async def gmail_waiting(
@@ -451,9 +474,16 @@ async def gmail_waiting(
     ``ownership_known: false`` rather than dropped: missing a thread the user
     owes is worse than showing one the reader can dismiss. ``stats`` counts
     these as ``ownership_unknown``.
+
+    ``lookback_days`` replaces the report window with the last N days, and
+    ``min_age_hours`` drops threads active more recently than that
+    (``dropped_fresh``), so the section lists mail that has been waiting.
+    Senders matching ``priority_senders`` get ``priority: true``.
     """
     opts = GmailOptions(**options)
     section = _section("gmail_waiting")
+    if opts.lookback_days is not None:
+        window = Window(start=now - timedelta(days=opts.lookback_days), end=window.end)
     thread_ids = await _search_threads(gw, opts, window, section)
 
     stats = section["stats"]
@@ -463,6 +493,7 @@ async def gmail_waiting(
         dropped_noise=0,
         dropped_not_owed=0,
         dropped_old=0,
+        dropped_fresh=0,
         ownership_unknown=0,
     )
     stats["truncated"] = max(0, len(thread_ids) - opts.max_threads)
@@ -523,13 +554,16 @@ def _thread_payload(res: GatewayResult) -> tuple[str, dict[str, Any]]:
     return str(payload.get("content") or ""), dict(payload.get("analysis") or {})
 
 
-def _drop_reason(facts: dict[str, Any], window: Window, account: str) -> str | None:
+def _drop_reason(
+    facts: dict[str, Any], window: Window, account: str, fresh_after: datetime | None = None
+) -> str | None:
     """The stats key a thread is dropped under, or None to keep it.
 
     Args:
         facts: ``parsers.gmail_thread_facts`` output for the thread.
         window: The report window; threads last active before it are old.
         account: The mailbox address; a thread it sent last is the user's own.
+        fresh_after: Threads last active after this are too new to list.
     """
     if (parsers.email_address(facts["sender"]) or "").lower() == account.lower():
         # The user sent the last message (their own reports, sent replies):
@@ -541,6 +575,8 @@ def _drop_reason(facts: dict[str, Any], window: Window, account: str) -> str | N
         return "dropped_not_owed"
     if facts["last_at"] is not None and facts["last_at"] < window.start:
         return "dropped_old"
+    if fresh_after is not None and facts["last_at"] is not None and facts["last_at"] > fresh_after:
+        return "dropped_fresh"
     return None
 
 
@@ -553,13 +589,15 @@ def _gmail_record(
     stats: dict[str, Any],
 ) -> dict[str, Any] | None:
     facts = parsers.gmail_thread_facts(*_thread_payload(res))
-    reason = _drop_reason(facts, window, opts.account)
+    fresh_after = now - timedelta(hours=opts.min_age_hours) if opts.min_age_hours else None
+    reason = _drop_reason(facts, window, opts.account, fresh_after)
     if reason is not None:
         stats[reason] += 1
         return None
     stats["ownership_unknown"] += facts["ball"] is None
     last_at: datetime | None = facts["last_at"]
     subject: str | None = facts["subject"]
+    sender = (facts["sender"] or "").lower()
     return {
         "thread_id": tid,
         "link": opts.link_template.format(thread_id=tid) if opts.link_template else None,
@@ -571,6 +609,7 @@ def _gmail_record(
         "participant_count": facts["participant_count"],
         "is_invitation": bool(subject and subject.lower().startswith("invitation:")),
         "ownership_known": facts["ball"] is not None,
+        "priority": any(p.lower() in sender for p in opts.priority_senders),
         "flagged": res.flagged,
         "body": None if res.flagged or not opts.body_chars else facts["body"][: opts.body_chars],
     }
