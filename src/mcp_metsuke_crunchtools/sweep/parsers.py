@@ -63,9 +63,12 @@ def slack_is_ask(text: str | None) -> bool:
     is not an ask, and a curly apostrophe is normalized so "Let's talk" still
     matches.
     """
-    if not text:
-        return False
-    plain = _QUOTED.sub(" ", _SLACK_MARKUP.sub(" ", text)).replace("\u2019", "'")
+    return bool(text) and _reads_as_ask(_QUOTED.sub(" ", text or ""))
+
+
+def _reads_as_ask(unquoted: str) -> bool:
+    """``slack_is_ask`` for text whose quoted spans are already removed."""
+    plain = _SLACK_MARKUP.sub(" ", unquoted).replace("\u2019", "'")
     return "?" in plain or bool(_REQUEST.search(plain))
 
 
@@ -84,10 +87,16 @@ class ReplyState:
 
 
 def _vocative(name: str) -> re.Pattern[str]:
-    """``name`` used to address someone: "Scott, ...", "Hey Scott ...", "..., Scott?"."""
+    """``name`` used to address someone.
+
+    "Scott, ...", "Hey Scott - ...", "Scott can you ..." (the name opening the
+    message, then punctuation or a request word), or "..., Scott?" closing it.
+    """
     n = re.escape(name)
+    opener = r"^\s*(?:(?:hey|hi|hello)\s+)?"
+    request_word = r"(?:can|could|would|will|please|pls|do|did|are|any|what|when|how|where)\b"
     return re.compile(
-        rf"^\s*(?:(?:hey|hi|hello)\s+)?{n}\b\s*[,:!\-\u2014]|,\s*{n}\s*[?!.]*\s*$",
+        rf"{opener}{n}\b\s*[,:!\-\u2014]|{opener}{n}\s+{request_word}|,\s*{n}\s*[?!.]*\s*$",
         re.IGNORECASE,
     )
 
@@ -124,6 +133,17 @@ def slack_reply_state(
     ``tail`` is the last four messages; see ``slack_tail_from`` for channel
     history, where those may be unrelated.
 
+    Args:
+        messages: Slack message dicts as ``conversations.history`` or
+            ``conversations.replies`` return them. Fields read: ``user`` (author
+            ID), ``ts`` (timestamp string), ``text``, ``reactions`` (list of
+            ``{"name", "users"}``), ``reply_users`` (IDs who replied in the
+            message's thread), and the bot markers ``bot_id``, ``subtype``,
+            ``username`` and ``user_profile.name``. Any order.
+        user_id: The user whose replies are being tracked.
+        one_to_one: True for a one-to-one DM; False for group DMs and channels.
+        first_name: The user's first name, for direct address outside 1:1 DMs.
+
     Returns None when nothing in the conversation asks the user anything.
     """
     ordered = sorted(messages, key=lambda m: float(m.get("ts") or 0))
@@ -137,7 +157,7 @@ def slack_reply_state(
         if mention in own_words:
             return True
         addressed = one_to_one or bool(named and named.search(own_words))
-        return addressed and slack_is_ask(own_words)
+        return addressed and _reads_as_ask(own_words)
 
     asks = [m for m in ordered if directed(m)]
     if not asks:

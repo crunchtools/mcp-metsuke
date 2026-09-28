@@ -269,6 +269,7 @@ class TestSlackReplyState:
         [
             "Scott, can you review the doc?",
             "Hey Scott - could you take a look?",
+            "Scott can you review the doc?",
             "any thoughts on the draft, Scott?",
             f"<@{SCOTT}> lunch Thursday?",
         ],
