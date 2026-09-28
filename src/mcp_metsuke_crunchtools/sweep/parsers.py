@@ -83,43 +83,52 @@ class ReplyState:
     tail: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _vocative(name: str) -> re.Pattern[str]:
+    """``name`` used to address someone: "Scott, ...", "Hey Scott ...", "..., Scott?"."""
+    n = re.escape(name)
+    return re.compile(
+        rf"^\s*(?:(?:hey|hi|hello)\s+)?{n}\b\s*[,:!\-\u2014]|,\s*{n}\s*[?!.]*\s*$",
+        re.IGNORECASE,
+    )
+
+
 def slack_reply_state(
     messages: list[dict[str, Any]], user_id: str, one_to_one: bool, first_name: str | None = None
 ) -> ReplyState | None:
     """Decide whether ``user_id`` still owes a reply in a conversation.
 
-       An *ask* is a human message from someone else, directed at the user, that
-       reads as one:
+    An *ask* is a human message from someone else, directed at the user, that
+    reads as one:
 
-       - an @-mention of the user (tagging someone is directing it at them);
-       - in a one-to-one DM (``one_to_one``), a message that reads as a direct
-         question or request (``slack_is_ask``); chatter such as "nice!" is not;
-       - elsewhere (group DMs, channels), a question or request that addresses
-         the user by ``first_name`` ("Scott, can you review?"); a question to the
-         group at large is not an ask of the user.
+    - an @-mention of the user (tagging someone is directing it at them);
+    - in a one-to-one DM (``one_to_one``), a message that reads as a direct
+      question or request (``slack_is_ask``); chatter such as "nice!" is not;
+    - elsewhere (group DMs, channels), a question or request that addresses
+      the user by ``first_name`` ("Scott, can you review?", "any thoughts,
+      Scott?"); a question to the group, or one that merely mentions the name
+      ("Scott reviewed this; can someone else look?"), is not an ask.
 
     Quoted text (double-quoted spans, blockquote lines) never directs an ask:
     a relayed "<@user> can you review?" is someone else's request.
-    Once the user has responded,
-       a conversation stays done until someone asks again. An ask is answered
-       when the user posted anywhere in the conversation after it, reacted to it,
-       or replied in its thread (``reply_users``, present when the ask is a
-       top-level message). A later post answers every earlier ask by design: the
-       user's rule is that once they have responded in a conversation, they are
-       done with it (RT #1469). Only a reaction or thread reply is specific to
-       one ask, so only those leave an earlier ask open.
 
-       - ``waiting``: some ask is unanswered; ``last_ask`` is the latest such one.
-       - ``answered``: every ask is answered; ``last_ask`` is the latest ask.
+    An ask is answered when the user posted anywhere in the conversation after
+    it, reacted to it, or replied in its thread (``reply_users``, present when
+    the ask is a top-level message). A later post answers every earlier ask by
+    design: the user's rule is that once they have responded in a conversation,
+    they are done with it (RT #1469). Only a reaction or thread reply is
+    specific to one ask, so only those leave an earlier ask open.
 
-       ``tail`` is the last four messages; see ``slack_tail_from`` for channel
-       history, where those may be unrelated.
+    - ``waiting``: some ask is unanswered; ``last_ask`` is the latest such one.
+    - ``answered``: every ask is answered; ``last_ask`` is the latest ask.
 
-       Returns None when nothing in the conversation asks the user anything.
+    ``tail`` is the last four messages; see ``slack_tail_from`` for channel
+    history, where those may be unrelated.
+
+    Returns None when nothing in the conversation asks the user anything.
     """
     ordered = sorted(messages, key=lambda m: float(m.get("ts") or 0))
     mention = f"<@{user_id}>"
-    named = re.compile(rf"\b{re.escape(first_name)}\b", re.IGNORECASE) if first_name else None
+    named = _vocative(first_name) if first_name else None
 
     def directed(msg: dict[str, Any]) -> bool:
         if msg.get("user") == user_id or slack_is_bot(msg):

@@ -265,7 +265,13 @@ class TestSlackReplyState:
         assert parsers.slack_reply_state(msgs, SCOTT, one_to_one=False, first_name="Scott") is None
 
     @pytest.mark.parametrize(
-        "text", ["Scott, can you review the doc?", f"<@{SCOTT}> lunch Thursday?"]
+        "text",
+        [
+            "Scott, can you review the doc?",
+            "Hey Scott - could you take a look?",
+            "any thoughts on the draft, Scott?",
+            f"<@{SCOTT}> lunch Thursday?",
+        ],
     )
     def test_group_dm_ask_that_targets_the_user_waits(self, text: str) -> None:
         msgs = [{"user": "U1", "ts": "1.0", "text": text}]
@@ -276,6 +282,11 @@ class TestSlackReplyState:
     def test_mention_inside_a_quote_is_not_an_ask(self) -> None:
         msgs = [{"user": "U1", "ts": "1.0", "text": f'Carlos wrote "<@{SCOTT}> can you review?"'}]
         assert parsers.slack_reply_state(msgs, SCOTT, one_to_one=False) is None
+
+    def test_name_in_passing_does_not_target_the_user(self) -> None:
+        text = "Scott reviewed this yesterday; can someone else take a look?"
+        msgs = [{"user": "U1", "ts": "1.0", "text": text}]
+        assert parsers.slack_reply_state(msgs, SCOTT, one_to_one=False, first_name="Scott") is None
 
     def test_name_inside_a_quote_does_not_target_the_user(self) -> None:
         msgs = [{"user": "U1", "ts": "1.0", "text": 'He said "Scott, can you review?" to me'}]
