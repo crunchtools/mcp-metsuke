@@ -26,7 +26,7 @@ _REQUEST = re.compile(
     r"|\bapprove\b|\blet'?s (?:talk|meet|chat|sync|find (?:a few minutes|time))\b"
     r"|\bare you able\b|\bdo you have\b|\bwhen you get a chance\b"
     # An imperative "Review ..." opening a sentence, not the noun ("Review of X starts").
-    r"|(?:^|[.!:]\s+)review\b(?!\s+(?:of|is|was|went|starts|meeting|notes)\b)",
+    r"|(?:^|[.!?:]\s+)review\b(?!\s+(?:of|is|was|went|starts|meeting)\b)",
     re.IGNORECASE,
 )
 # Slack markup: <@U123>, <#C123|name>, <https://...?q=1|label>.

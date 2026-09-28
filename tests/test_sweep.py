@@ -210,6 +210,8 @@ class TestSlackIsAsk:
             "Would love your thoughts on the draft",
             "Review the PR before merge.",
             "Draft is up. Review when you can",
+            "Any concerns? Review the PR before merge.",
+            "Review notes before the meeting.",
         ],
     )
     def test_asks(self, text: str) -> None:
@@ -225,6 +227,11 @@ class TestSlackIsAsk:
             "Also, feedback to you, emotions run high on the Hummingbird topic",
             "I did a review of the kernel build times",
             "Review of the kernel build times starts Monday.",
+            "Review is pending",
+            "Review was fine",
+            "Review went well",
+            "Review starts Monday",
+            "Review meeting moved to 3pm",
             "see <https://x.slack.com/archives/C1/p1?thread_ts=1.2|this>",
             "",
             None,
