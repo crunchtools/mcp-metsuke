@@ -22,9 +22,11 @@ SLACK_SYSTEM_PROFILE = "slack"
 # A direct ask: a question, or a request phrased without a question mark.
 _REQUEST = re.compile(
     r"\b(?:can|could|would|will) you\b|\bplease\b|\bpls\b|\blet me know\b|\bneed your\b"
-    r"|\b(?:take|have) a look\b|\bthoughts\b|\bfeedback\b|\breview\b|\bsign[- ]off\b"
+    r"|\b(?:take|have) a look\b|\b(?:your|any) (?:feedback|thoughts|input|review)\b|\bsign[- ]off\b"
     r"|\bapprove\b|\blet'?s (?:talk|meet|chat|sync|find (?:a few minutes|time))\b"
-    r"|\bare you able\b|\bdo you have\b|\bwhen you get a chance\b",
+    r"|\bare you able\b|\bdo you have\b|\bwhen you get a chance\b"
+    # An imperative "Review ..." opening a sentence, not the noun ("Review of X starts").
+    r"|(?:^|[.!?:]\s+)review\b(?!\s+(?:of|is|was|went|starts|meeting)\b)",
     re.IGNORECASE,
 )
 # Slack markup: <@U123>, <#C123|name>, <https://...?q=1|label>.
