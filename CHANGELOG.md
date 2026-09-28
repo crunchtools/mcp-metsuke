@@ -8,6 +8,10 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+### Fixed
+- The container image's `version` label read 0.5.1; it now matches the release,
+  and a test keeps the label, package, and `server.json` versions in sync.
+
 ## [2.1.0] - 2026-09-28
 
 ### Added
