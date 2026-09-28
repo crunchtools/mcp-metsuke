@@ -914,7 +914,48 @@ class TestFeedsCollector:
         }
         sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
         assert len(sweep["sections"]["rss"]["records"]) == 2
-        assert all(a["since_days"] == 3 and a["unread_only"] is False for _, _, a in gw.calls)
+        assert all(
+            a["published_after"] == "2026-09-24T12:00:00Z" and a["unread_only"] is False
+            for _, _, a in gw.calls
+        )
+
+    async def test_monday_rerun_anchors_on_window_start(self) -> None:
+        # A Monday-afternoon re-run must still reach back to Friday 06:00 ET;
+        # a rolling 3 days from 15:26Z would drop Friday morning's entries.
+        gw = FakeGateway(lambda b, t, a: _ok([]))
+        step = {"section": "rss", "collector": "feed_entries", "options": {"categories": {"1": 5}}}
+        monday = datetime(2026, 9, 28, 15, 26, tzinfo=UTC)
+        await run_sweep(SweepSpec(steps=[step]), gw, now=monday)
+        assert gw.calls[0][2]["published_after"] == "2026-09-25T10:00:00Z"
+
+    async def test_empty_category_is_zero_entries_not_an_error(self) -> None:
+        # An empty list comes back from the gateway as empty text (daily-briefing, 2026-09-28).
+        gw = FakeGateway(lambda b, t, a: _ok("" if a["category_id"] == 7 else {"result": []}))
+        step = {
+            "section": "rss",
+            "collector": "feed_entries",
+            "options": {"categories": {"1": 5, "7": 5}},
+        }
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        rss = sweep["sections"]["rss"]
+        assert rss["status"] == "ok"
+        assert rss["errors"] == []
+        assert rss["records"] == []
+
+    async def test_wrapped_result_list_is_unwrapped(self) -> None:
+        entry = {
+            "id": 5350,
+            "title": "Experts Lead Experts",
+            "url": "https://x",
+            "feed_title": "SVPG",
+        }
+        gw = FakeGateway(lambda b, t, a: _ok({"result": [entry]}))
+        step = {"section": "rss", "collector": "feed_entries", "options": {"categories": {"1": 5}}}
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        records = sweep["sections"]["rss"]["records"]
+        assert [(r["entry_id"], r["title"], r["feed"]) for r in records] == [
+            (5350, "Experts Lead Experts", "SVPG")
+        ]
 
 
 # --- engine / validation --------------------------------------------------

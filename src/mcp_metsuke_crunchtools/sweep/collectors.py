@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -779,8 +779,11 @@ async def feed_entries(
 ) -> dict[str, Any]:
     """Recent feed entries per category, read or unread (read-state is not importance).
 
-    After a weekend (Monday, or a weekend run) the lookback widens to
-    ``since_days_after_weekend``. Output is capped at ``MAX_FEED_RECORDS``.
+    The lookback starts at the sweep window's start or ``since_days`` ago,
+    whichever is earlier, so re-runs later in the day cover the same span.
+    After a weekend (Monday, or a weekend run) ``since_days_after_weekend``
+    applies instead. An empty category comes back as empty text and counts as
+    zero entries. Output is capped at ``MAX_FEED_RECORDS``.
     """
     opts = FeedOptions(**options)
     section = _section("feed_entries")
@@ -788,13 +791,16 @@ async def feed_entries(
     weekend_gap = local.weekday() == 0 or local.weekday() >= SATURDAY
     since = opts.since_days_after_weekend if weekend_gap else opts.since_days
     section["stats"]["since_days"] = since
+    after = min(window.start, now - timedelta(days=since)).astimezone(UTC)
+    published_after = after.strftime("%Y-%m-%dT%H:%M:%SZ")
+    section["stats"]["published_after"] = published_after
     for category, limit in opts.categories.items():
         res = await gw.call(
             opts.backend,
             "list_entries_tool",
             {
                 "category_id": int(category),
-                "since_days": since,
+                "published_after": published_after,
                 "unread_only": False,
                 "limit": limit,
             },
@@ -804,10 +810,12 @@ async def feed_entries(
             continue
         _count_ok(section)
         try:
-            entries = res.json()
+            entries = res.json() if res.text.strip() else []
         except ValueError:
             _note_error(section, f"category {category}", _bad_json(res))
             continue
+        if isinstance(entries, dict):
+            entries = entries.get("result", [])
         room = MAX_FEED_RECORDS - len(section["records"])
         for entry in (entries if isinstance(entries, list) else [])[: max(0, room)]:
             section["records"].append(
