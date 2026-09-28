@@ -127,7 +127,7 @@ flags are stored as metadata only, with their text withheld.
 
 | Collector | What it produces |
 |-----------|------------------|
-| `slack_waiting` | Direct asks over a lookback: an @-mention, or a DM message that reads as a question or request (DM chatter and Slack system notices are not asks). Each thread or DM is read for up to three pages (longer or partly unreadable ones are marked `unverified`). An ask the user replied to or reacted to is `answered` and dropped; the rest are `waiting`, with `in_window` separating new asks from still-open ones |
+| `slack_waiting` | Direct asks over a lookback: an @-mention, or a DM message that reads as a question or request (DM chatter and Slack system notices are not asks). Threads are read as threads; DMs and top-level channel mentions are read from channel history (one conversation per channel). Each is read for up to three pages (longer or partly unreadable ones are marked `unverified`). An ask the user replied to or reacted to is `answered` and dropped; the rest are `waiting`, with `in_window` separating new asks from still-open ones |
 | `gmail_waiting` | Inbox threads in the window (or `lookback_days`) where the backend's ownership analysis says the ball is in the user's court; automated mail, bare calendar notices and threads newer than `min_age_hours` dropped, invitations kept, `priority_senders` marked `priority` |
 | `calendar_day` | The report day's meetings, pending invites over a lookahead, and hard overlaps |
 | `feed_entries` | Recent entries per feed category (read or unread), with a longer window after a weekend |

@@ -8,6 +8,19 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-09-28
+
+### Fixed
+- A channel @-mention that is not in a thread is now read from channel history
+  (from the first such mention, 15 messages a page), not as a one-message
+  thread. The user's later top-level reply in the channel, or a reply in the
+  ask's own thread (`reply_users`), answers it. Before, a reply in an unthreaded
+  channel was never seen, and each mention was listed separately.
+- Every ask in a conversation is checked, not only the latest: an earlier ask
+  stays open when only a later one got a reaction or thread reply. A later post
+  by the user still answers every earlier ask, by design. For channel history, a record's `tail` starts at the ask
+  rather than showing the channel's latest, possibly unrelated, messages.
+
 ## [2.0.1] - 2026-09-28
 
 ### Fixed

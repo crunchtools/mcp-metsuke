@@ -45,6 +45,8 @@ SLACK_SEARCH_PAGE_SIZE = 20
 SLACK_THREAD_LIMIT = 100
 SLACK_THREAD_MAX_PAGES = 3
 SLACK_DM_HISTORY_LIMIT = 30
+# Channel messages run larger than DM ones: smaller pages stay under the admission cap.
+SLACK_CHANNEL_HISTORY_LIMIT = 15
 SLACK_ASK_CHARS = 700
 SLACK_TAIL_CHARS = 300
 DEFAULT_LOOKBACK_DAYS = 7
@@ -224,7 +226,10 @@ def _add_match(
         return
     base, thread_ts = parsers.slack_link_parts(match.get("permalink") or "")
     is_dm = bool(channel.get("is_im") or channel.get("is_mpim"))
-    key = (channel["id"], thread_ts or (f"dm:{channel['id']}" if is_dm else ts))
+    # Threads are read as threads. DMs and top-level channel mentions (replies
+    # there are later channel messages, not thread replies) are each one
+    # conversation per channel, read from history.
+    key = (channel["id"], thread_ts or (f"dm:{channel['id']}" if is_dm else f"top:{channel['id']}"))
     conv = conversations.setdefault(key, _new_conversation(channel, is_dm, thread_ts, ts, base))
     conv["earliest_ts"] = min(conv["earliest_ts"], float(ts))
     if float(ts) >= conv["latest_ts"]:
@@ -242,7 +247,7 @@ def _new_conversation(
         "channel_name": None if one_to_one else channel.get("name"),
         "dm_user": channel.get("user") if one_to_one else None,
         "is_dm": is_dm,
-        "thread_ts": thread_ts or (None if is_dm else ts),
+        "thread_ts": thread_ts,
         "earliest_ts": float(ts),
         "latest_ts": float(ts),
         "latest_hit": None,
@@ -251,7 +256,7 @@ def _new_conversation(
 
 
 def _conversation_call(conv: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """The paged read for a conversation: thread replies, or DM history from the first hit."""
+    """The paged read for a conversation: thread replies, or history from the first hit."""
     if conv["thread_ts"]:
         return "slack_get_thread_replies", {
             "channel_id": conv["channel_id"],
@@ -261,7 +266,7 @@ def _conversation_call(conv: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return "slack_get_channel_history", {
         "channel_id": conv["channel_id"],
         "oldest": f"{conv['earliest_ts'] - 1:.6f}",
-        "limit": SLACK_DM_HISTORY_LIMIT,
+        "limit": SLACK_DM_HISTORY_LIMIT if conv["is_dm"] else SLACK_CHANNEL_HISTORY_LIMIT,
         "inclusive": True,
     }
 
@@ -331,7 +336,7 @@ async def _read_conversation(
     them for names once every conversation has been read.
     """
     res, messages, complete, page_failure = await _fetch_conversation(gw, opts, conv)
-    where = f"conversation {conv['channel_id']}/{conv['thread_ts'] or 'dm'}"
+    where = f"conversation {conv['channel_id']}/{conv['thread_ts'] or 'history'}"
     if page_failure is not None:
         _note_error(section, f"{where} later page", page_failure)
     if not res.ok:
@@ -343,6 +348,9 @@ async def _read_conversation(
     _count_ok(section)
 
     state = parsers.slack_reply_state(messages, opts.user_id, conv["is_dm"])
+    if state is not None and not conv["is_dm"] and not conv["thread_ts"]:
+        # Channel history: the latest messages may be unrelated to the ask.
+        state.tail = parsers.slack_tail_from(messages, state.last_ask)
     hit = conv["latest_hit"]
     if state is None and not complete and hit and hit["ts"] not in {m.get("ts") for m in messages}:
         # The search hit that surfaced this conversation lies beyond the pages
