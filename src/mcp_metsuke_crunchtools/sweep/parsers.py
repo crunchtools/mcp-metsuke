@@ -144,7 +144,9 @@ def slack_reply_state(
         one_to_one: True for a one-to-one DM; False for group DMs and channels.
         first_name: The user's first name, for direct address outside 1:1 DMs.
 
-    Returns None when nothing in the conversation asks the user anything.
+    Returns:
+        The conversation's ``ReplyState``, or None when nothing in it asks the
+        user anything.
     """
     ordered = sorted(messages, key=lambda m: float(m.get("ts") or 0))
     mention = f"<@{user_id}>"
