@@ -227,6 +227,9 @@ def _add_match(
     key = (channel["id"], thread_ts or (f"dm:{channel['id']}" if is_dm else ts))
     conv = conversations.setdefault(key, _new_conversation(channel, is_dm, thread_ts, ts, base))
     conv["earliest_ts"] = min(conv["earliest_ts"], float(ts))
+    if float(ts) >= conv["latest_ts"]:
+        # Who and when only: search text is not used, since the read decides flagging.
+        conv["latest_hit"] = {"user": match.get("user"), "ts": ts}
     conv["latest_ts"] = max(conv["latest_ts"], float(ts))
 
 
@@ -242,6 +245,7 @@ def _new_conversation(
         "thread_ts": thread_ts or (None if is_dm else ts),
         "earliest_ts": float(ts),
         "latest_ts": float(ts),
+        "latest_hit": None,
         "permalink_base": base,
     }
 
@@ -339,6 +343,10 @@ async def _read_conversation(
     _count_ok(section)
 
     state = parsers.slack_reply_state(messages, opts.user_id, conv["is_dm"])
+    if state is None and not complete and conv["latest_hit"]:
+        # The search hit that surfaced this conversation lies beyond the pages
+        # read: whether it asks anything is unknown, so keep it for the reader.
+        state = parsers.ReplyState(last_ask=conv["latest_hit"], state="unverified")
     if state is None:
         section["stats"]["dropped_no_ask"] += 1
         return None, False

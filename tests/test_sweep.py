@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx as httpx_module
@@ -1420,6 +1420,44 @@ class TestSlackPageFailure:
         assert record["state"] == "unverified"
         assert any("later page: boom" in e for e in sweep["sections"]["slack"]["errors"])
 
+    @pytest.mark.parametrize(("complete", "kept"), [(False, True), (True, False)])
+    async def test_no_ask_in_pages_read(self, complete: bool, kept: bool) -> None:
+        # The first page is chatter; the hit that mentioned Scott is on a page
+        # that failed. An incomplete read cannot prove there was no ask.
+        chatter = [{"user": "U1", "ts": "1790286385.234649", "text": "root message"}]
+
+        more = {} if complete else {"has_more": True, "response_metadata": {"next_cursor": "c"}}
+        first_page = _ok({"messages": chatter, **more})
+        failed_page = GatewayResult(text="", error="boom")
+
+        def thread_page(args: dict[str, Any]) -> GatewayResult:
+            return failed_page if args.get("cursor") else first_page
+
+        handlers = {
+            "slack_search_messages": lambda args: _ok(
+                {
+                    "matches": []
+                    if args["query"].startswith("to:@")
+                    else [_match("C0C4", "rhhi", "1790290000.000100", "U03QPSY9SEL", None)],
+                    "pagination": {"page_count": 1},
+                }
+            ),
+            "slack_get_thread_replies": thread_page,
+            "slack_get_user_info": lambda args: _ok({"user": {"real_name": "Carlos O'Donell"}}),
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        sweep = await run_sweep(SweepSpec(steps=[SLACK_STEP]), gw, now=NOW)
+        section = sweep["sections"]["slack"]
+        if kept:
+            (record,) = section["records"]
+            assert record["state"] == "unverified"
+            assert record["asker"] == "Carlos O'Donell"
+            assert record["asked_at"].startswith("2026-09-24")
+            assert section["stats"]["dropped_no_ask"] == 0
+        else:
+            assert section["records"] == []
+            assert section["stats"]["dropped_no_ask"] == 1
+
 
 class TestDmPaging:
     async def test_dm_history_follows_cursor_and_flags_truncation(self) -> None:
@@ -1689,8 +1727,25 @@ class TestSelfSentMail:
         assert section["stats"]["dropped_self"] == 1
 
 
+FRESH_CUTOFF = NOW - timedelta(hours=24)
+
+
 class TestDropReason:
     WINDOW = previous_weekday_at(NOW, TZ)
+
+    @pytest.mark.parametrize(
+        ("last_at", "expected"),
+        [
+            (FRESH_CUTOFF, None),  # exactly at the cutoff: old enough
+            (FRESH_CUTOFF + timedelta(seconds=1), "dropped_fresh"),
+            (FRESH_CUTOFF - timedelta(hours=1), None),
+            (None, None),  # no timestamp: kept for the reader
+        ],
+    )
+    def test_fresh_cutoff(self, last_at: datetime | None, expected: str | None) -> None:
+        facts = {"subject": "Hi", "sender": "a@redhat.com", "ball": "user", "last_at": last_at}
+        got = _drop_reason(facts, self.WINDOW, "smccarty@redhat.com", FRESH_CUTOFF)
+        assert got == expected
 
     @pytest.mark.parametrize(
         ("sender", "expected"),
