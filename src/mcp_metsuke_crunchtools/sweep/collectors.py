@@ -336,7 +336,8 @@ async def _read_conversation(
     them for names once every conversation has been read.
     """
     res, messages, complete, page_failure = await _fetch_conversation(gw, opts, conv)
-    where = f"conversation {conv['channel_id']}/{conv['thread_ts'] or 'history'}"
+    kind = conv["thread_ts"] or ("dm" if conv["is_dm"] else "history")
+    where = f"conversation {conv['channel_id']}/{kind}"
     if page_failure is not None:
         _note_error(section, f"{where} later page", page_failure)
     if not res.ok:
