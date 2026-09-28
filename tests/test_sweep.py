@@ -132,29 +132,29 @@ class TestWindow:
 
 class TestSlackReplyState:
     def test_answered_thread_is_answered(self) -> None:
-        state = parsers.slack_reply_state(ICICI, SCOTT, is_dm=False)
+        state = parsers.slack_reply_state(ICICI, SCOTT, one_to_one=False)
         assert state is not None
         assert state.state == "answered"
 
     def test_reaction_counts_as_answered(self) -> None:
         # Scott's thumbs-up on "Let's talk first" is his response: done.
-        state = parsers.slack_reply_state(OPENSHELL, SCOTT, is_dm=False)
+        state = parsers.slack_reply_state(OPENSHELL, SCOTT, one_to_one=False)
         assert state is not None
         assert state.state == "answered"
         assert "talk first" in state.last_ask["text"]
 
     def test_unanswered_mention_is_waiting(self) -> None:
-        state = parsers.slack_reply_state(CARLOS, SCOTT, is_dm=False)
+        state = parsers.slack_reply_state(CARLOS, SCOTT, one_to_one=False)
         assert state is not None
         assert state.state == "waiting"
 
     def test_nothing_directed_returns_none(self) -> None:
         msgs = [{"user": "U1", "ts": "1.0", "text": "no mention"}]
-        assert parsers.slack_reply_state(msgs, SCOTT, is_dm=False) is None
+        assert parsers.slack_reply_state(msgs, SCOTT, one_to_one=False) is None
 
     def test_dm_messages_count_without_mention(self) -> None:
         msgs = [{"user": "U1", "ts": "1.0", "text": "got a sec?"}]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=True)
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=True)
         assert state is not None
         assert state.state == "waiting"
 
@@ -170,18 +170,18 @@ class TestSlackReplyState:
     def test_slack_system_user_never_asks(self, sender: dict[str, Any]) -> None:
         msg = {**sender, "ts": "1.0", "text": "You have been removed from #x. Rejoin?"}
         assert parsers.slack_is_bot(msg)
-        assert parsers.slack_reply_state([msg], SCOTT, is_dm=True) is None
+        assert parsers.slack_reply_state([msg], SCOTT, one_to_one=True) is None
 
     @pytest.mark.parametrize(
         "text", ["nice!", "no worries", "Glad to read :). We are well.", "HA! I wish I could"]
     )
     def test_dm_chatter_is_not_an_ask(self, text: str) -> None:
         msgs = [{"user": "U1", "ts": "1.0", "text": text}]
-        assert parsers.slack_reply_state(msgs, SCOTT, is_dm=True) is None
+        assert parsers.slack_reply_state(msgs, SCOTT, one_to_one=True) is None
 
     def test_dm_request_without_question_mark_is_waiting(self) -> None:
         msgs = [{"user": "U1", "ts": "1.0", "text": "Let\u2019s find a few minutes to talk"}]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=True)
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=True)
         assert state is not None
         assert state.state == "waiting"
 
@@ -192,7 +192,7 @@ class TestSlackReplyState:
             {"user": SCOTT, "ts": "2.0", "text": "We are well, I hope you and Cami are well!"},
             {"user": "U1", "ts": "3.0", "text": "Glad to read :). We are well."},
         ]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=True)
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=True)
         assert state is not None
         assert state.state == "answered"
 
@@ -202,7 +202,7 @@ class TestSlackReplyState:
             {"user": SCOTT, "ts": "2.0", "text": "Done."},
             {"user": "U1", "ts": "3.0", "text": "Would you be able to join the call?"},
         ]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=True)
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=True)
         assert state is not None
         assert state.state == "waiting"
         assert "join the call" in state.last_ask["text"]
@@ -217,7 +217,7 @@ class TestSlackReplyState:
                 "reactions": [{"name": "+1", "users": [SCOTT], "count": 1}],
             },
         ]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=False)
         assert state is not None
         assert state.state == "waiting"
         assert state.last_ask["ts"] == "1.0"
@@ -229,7 +229,7 @@ class TestSlackReplyState:
             {"user": "U2", "ts": "2.0", "text": f"<@{SCOTT}> any feedback on the deck?"},
             {"user": SCOTT, "ts": "3.0", "text": "Will look at both this afternoon."},
         ]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=False)
         assert state is not None
         assert state.state == "answered"
 
@@ -243,7 +243,7 @@ class TestSlackReplyState:
             },
             {"user": "U2", "ts": "2.0", "text": f"<@{SCOTT}> any feedback on the deck?"},
         ]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=False)
         assert state is not None
         assert state.state == "waiting"
         assert state.last_ask["ts"] == "2.0"
@@ -254,7 +254,7 @@ class TestSlackReplyState:
             {"user": "U1", "ts": "1.0", "text": f"<@{SCOTT}> any feedback?"},
             *({"user": "U9", "ts": f"{i}.0", "text": f"unrelated {i}"} for i in range(2, 9)),
         ]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=False)
         assert state is not None
         tail = parsers.slack_tail_from(msgs, state.last_ask)
         assert [m["ts"] for m in tail] == ["1.0", "2.0", "3.0", "4.0"]
@@ -262,32 +262,36 @@ class TestSlackReplyState:
     def test_group_dm_question_to_the_group_is_not_an_ask(self) -> None:
         # Prarit, 2026-09-24, group DM: a question to everyone, not to Scott.
         msgs = [{"user": "U1", "ts": "1.0", "text": "Uh ... isn't Aquasec on the west coast?"}]
-        assert parsers.slack_reply_state(msgs, SCOTT, is_dm=False, first_name="Scott") is None
+        assert parsers.slack_reply_state(msgs, SCOTT, one_to_one=False, first_name="Scott") is None
 
     @pytest.mark.parametrize(
         "text", ["Scott, can you review the doc?", f"<@{SCOTT}> lunch Thursday?"]
     )
     def test_group_dm_ask_that_targets_the_user_waits(self, text: str) -> None:
         msgs = [{"user": "U1", "ts": "1.0", "text": text}]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False, first_name="Scott")
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=False, first_name="Scott")
         assert state is not None
         assert state.state == "waiting"
 
+    def test_mention_inside_a_quote_is_not_an_ask(self) -> None:
+        msgs = [{"user": "U1", "ts": "1.0", "text": f'Carlos wrote "<@{SCOTT}> can you review?"'}]
+        assert parsers.slack_reply_state(msgs, SCOTT, one_to_one=False) is None
+
     def test_name_inside_a_quote_does_not_target_the_user(self) -> None:
         msgs = [{"user": "U1", "ts": "1.0", "text": 'He said "Scott, can you review?" to me'}]
-        assert parsers.slack_reply_state(msgs, SCOTT, is_dm=False, first_name="Scott") is None
+        assert parsers.slack_reply_state(msgs, SCOTT, one_to_one=False, first_name="Scott") is None
 
     def test_reply_in_the_asks_thread_answers_it(self) -> None:
         # A top-level ask read from history carries reply_users for its thread.
         msgs = [
             {"user": "U1", "ts": "1.0", "text": f"<@{SCOTT}> thoughts?", "reply_users": [SCOTT]}
         ]
-        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        state = parsers.slack_reply_state(msgs, SCOTT, one_to_one=False)
         assert state is not None
         assert state.state == "answered"
 
     def test_channel_mention_is_an_ask_without_phrasing(self) -> None:
-        state = parsers.slack_reply_state(CARLOS, SCOTT, is_dm=False)
+        state = parsers.slack_reply_state(CARLOS, SCOTT, one_to_one=False)
         assert state is not None
         assert state.state == "waiting"
 
@@ -297,6 +301,31 @@ class TestSlackFirstName:
     def test_first_name_is_bounded(self, bad: str) -> None:
         with pytest.raises(ValidationError):
             SlackOptions(user_id=SCOTT, handle="smccarty", first_name=bad)
+
+    async def test_group_dm_ask_naming_the_user_waits(self) -> None:
+        hit = {
+            "channel": {"id": "G2", "is_mpim": True},
+            "user": "U1",
+            "ts": "1790343691.861819",
+            "text": "Scott, can you review the doc?",
+            "permalink": "https://x.slack.com/archives/G2/p1790343691861819",
+        }
+        handlers = {
+            "slack_search_messages": lambda args: _ok(
+                {
+                    "matches": [hit] if args["query"].startswith("to:@") else [],
+                    "pagination": {"page_count": 1},
+                }
+            ),
+            "slack_get_channel_history": lambda args: _ok({"messages": [hit]}),
+            "slack_get_user_info": lambda args: _ok({"user": {"real_name": "Prarit Bhargava"}}),
+        }
+        gw = FakeGateway(lambda backend, tool, args: handlers[tool](args))
+        step = {**SLACK_STEP, "options": {**SLACK_STEP["options"], "first_name": "Scott"}}
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        (record,) = sweep["sections"]["slack"]["records"]
+        assert record["state"] == "waiting"
+        assert record["where"] == "group DM"
 
     async def test_group_dm_question_needs_targeting(self) -> None:
         hit = {
@@ -385,7 +414,7 @@ class TestSlackIsAsk:
 
     def test_bots_never_ask(self) -> None:
         msgs = [{"user": None, "username": "shadowbot", "ts": "1.0", "text": f"Hi <@{SCOTT}>"}]
-        assert parsers.slack_reply_state(msgs, SCOTT, is_dm=True) is None
+        assert parsers.slack_reply_state(msgs, SCOTT, one_to_one=True) is None
 
     def test_permalink_and_thread_ts(self) -> None:
         link = "https://x.slack.com/archives/C1/p1790354958559129?thread_ts=1790344306.678549"

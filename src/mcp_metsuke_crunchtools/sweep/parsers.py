@@ -84,7 +84,7 @@ class ReplyState:
 
 
 def slack_reply_state(
-    messages: list[dict[str, Any]], user_id: str, is_dm: bool, first_name: str | None = None
+    messages: list[dict[str, Any]], user_id: str, one_to_one: bool, first_name: str | None = None
 ) -> ReplyState | None:
     """Decide whether ``user_id`` still owes a reply in a conversation.
 
@@ -92,11 +92,14 @@ def slack_reply_state(
        reads as one:
 
        - an @-mention of the user (tagging someone is directing it at them);
-       - in a one-to-one DM (``is_dm``), a message that reads as a direct
+       - in a one-to-one DM (``one_to_one``), a message that reads as a direct
          question or request (``slack_is_ask``); chatter such as "nice!" is not;
        - elsewhere (group DMs, channels), a question or request that addresses
          the user by ``first_name`` ("Scott, can you review?"); a question to the
          group at large is not an ask of the user.
+
+    Quoted text (double-quoted spans, blockquote lines) never directs an ask:
+    a relayed "<@user> can you review?" is someone else's request.
     Once the user has responded,
        a conversation stays done until someone asks again. An ask is answered
        when the user posted anywhere in the conversation after it, reacted to it,
@@ -121,11 +124,11 @@ def slack_reply_state(
     def directed(msg: dict[str, Any]) -> bool:
         if msg.get("user") == user_id or slack_is_bot(msg):
             return False
-        text = msg.get("text") or ""
-        if mention in text:
+        own_words = _QUOTED.sub(" ", msg.get("text") or "")
+        if mention in own_words:
             return True
-        addressed = is_dm or bool(named and named.search(_QUOTED.sub(" ", text)))
-        return addressed and slack_is_ask(text)
+        addressed = one_to_one or bool(named and named.search(own_words))
+        return addressed and slack_is_ask(own_words)
 
     asks = [m for m in ordered if directed(m)]
     if not asks:
