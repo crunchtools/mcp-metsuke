@@ -207,6 +207,7 @@ class TestSlackIsAsk:
             "Let\u2019s talk first.",
             "please sign off on the PRD",
             "let me know when you get a chance",
+            "Would love your thoughts on the draft",
         ],
     )
     def test_asks(self, text: str) -> None:
@@ -218,6 +219,9 @@ class TestSlackIsAsk:
             "nice!",
             "no worries",
             "97 survey answers are in: Chasing the last ones to reach 100",
+            # Carlos, 2026-09-24: a remark that mentions feedback, not a request for it.
+            "Also, feedback to you, emotions run high on the Hummingbird topic",
+            "I did a review of the kernel build times",
             "see <https://x.slack.com/archives/C1/p1?thread_ts=1.2|this>",
             "",
             None,
