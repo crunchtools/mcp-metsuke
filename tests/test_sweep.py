@@ -217,6 +217,21 @@ class TestSlackReplyState:
         assert state.state == "waiting"
         assert state.last_ask["ts"] == "1.0"
 
+    def test_answered_earlier_ask_yields_the_later_open_one(self) -> None:
+        msgs = [
+            {
+                "user": "U1",
+                "ts": "1.0",
+                "text": f"<@{SCOTT}> can you review the PRD?",
+                "reply_users": [SCOTT],
+            },
+            {"user": "U2", "ts": "2.0", "text": f"<@{SCOTT}> any feedback on the deck?"},
+        ]
+        state = parsers.slack_reply_state(msgs, SCOTT, is_dm=False)
+        assert state is not None
+        assert state.state == "waiting"
+        assert state.last_ask["ts"] == "2.0"
+
     def test_tail_from_ask_skips_unrelated_later_messages(self) -> None:
         msgs = [
             {"user": "U9", "ts": "0.5", "text": "unrelated earlier"},
