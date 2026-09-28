@@ -15,8 +15,20 @@ from typing import Any
 
 # --- Slack ---------------------------------------------------------------
 
-# Slackbot posts as a user, not a bot_id: channel removals, reminders, etc.
-SLACKBOT = "USLACKBOT"
+# Slack's system user posts as a user, not a bot_id: channel removals,
+# reminders, etc. Enterprise Grid workspaces use USLACK rather than USLACKBOT.
+SLACK_SYSTEM_USERS = frozenset({"USLACKBOT", "USLACK"})
+SLACK_SYSTEM_PROFILE = "slack"
+# A direct ask: a question, or a request phrased without a question mark.
+_REQUEST = re.compile(
+    r"\b(?:can|could|would|will) you\b|\bplease\b|\bpls\b|\blet me know\b|\bneed your\b"
+    r"|\b(?:take|have) a look\b|\bthoughts\b|\bfeedback\b|\breview\b|\bsign[- ]off\b"
+    r"|\bapprove\b|\blet'?s (?:talk|meet|chat|sync|find (?:a few minutes|time))\b"
+    r"|\bare you able\b|\bdo you have\b|\bwhen you get a chance\b",
+    re.IGNORECASE,
+)
+# Slack markup: <@U123>, <#C123|name>, <https://...?q=1|label>.
+_SLACK_MARKUP = re.compile(r"<[^<>]*>")
 _THREAD_TS = re.compile(r"[?&]thread_ts=([0-9.]+)")
 
 
@@ -29,12 +41,26 @@ def slack_link_parts(permalink: str) -> tuple[str, str | None]:
 
 def slack_is_bot(message: dict[str, Any]) -> bool:
     """True for bot and app messages (Slackbot included), which never count as asks."""
+    profile = message.get("user_profile") or {}
     return bool(
-        message.get("user") == SLACKBOT
+        message.get("user") in SLACK_SYSTEM_USERS
+        or profile.get("name") == SLACK_SYSTEM_PROFILE
         or message.get("bot_id")
         or message.get("subtype") == "bot_message"
         or (message.get("user") is None and message.get("username"))
     )
+
+
+def slack_is_ask(text: str | None) -> bool:
+    """True when a message reads as a direct question or request.
+
+    Slack markup (mentions, links) is removed first, so a URL's ``?`` is not a
+    question, and a curly apostrophe is normalized so "Let's talk" still matches.
+    """
+    if not text:
+        return False
+    plain = _SLACK_MARKUP.sub(" ", text).replace("\u2019", "'")
+    return "?" in plain or bool(_REQUEST.search(plain))
 
 
 def slack_reacted_by(message: dict[str, Any], user_id: str) -> bool:
@@ -47,7 +73,7 @@ class ReplyState:
     """Where a conversation stands with respect to one user."""
 
     last_ask: dict[str, Any]
-    state: str  # waiting | acknowledged | answered | unverified
+    state: str  # waiting | answered | unverified
     tail: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -56,15 +82,17 @@ def slack_reply_state(
 ) -> ReplyState | None:
     """Decide whether ``user_id`` still owes a reply in a conversation.
 
-    An *ask* is a human message from someone else that @-mentions the user, or
-    any human message from someone else in a DM. Looking only at the latest ask:
+    An *ask* is a human message from someone else that @-mentions the user
+    (tagging someone in a channel is directing it at them), or, in a DM, one
+    that reads as a direct question or request (``slack_is_ask``): DM chatter
+    such as "nice!" or "no worries" is not an ask. Once the user has responded,
+    a conversation stays done until someone asks again. Looking only at the
+    latest ask:
 
-    - ``answered``: the user posted after it.
-    - ``acknowledged``: the user only reacted to it. Kept, because a thumbs-up
-      on "let's talk first" still leaves a conversation owed.
+    - ``answered``: the user posted after it, or reacted to it.
     - ``waiting``: neither.
 
-    Returns None when nothing in the conversation is directed at the user.
+    Returns None when nothing in the conversation asks the user anything.
     """
     ordered = sorted(messages, key=lambda m: float(m.get("ts") or 0))
     mention = f"<@{user_id}>"
@@ -72,7 +100,8 @@ def slack_reply_state(
     def directed(msg: dict[str, Any]) -> bool:
         if msg.get("user") == user_id or slack_is_bot(msg):
             return False
-        return is_dm or mention in (msg.get("text") or "")
+        text = msg.get("text") or ""
+        return mention in text or (is_dm and slack_is_ask(text))
 
     asks = [m for m in ordered if directed(m)]
     if not asks:
@@ -80,12 +109,7 @@ def slack_reply_state(
     last_ask = asks[-1]
     ask_ts = float(last_ask.get("ts") or 0)
     replied = any(m.get("user") == user_id and float(m.get("ts") or 0) > ask_ts for m in ordered)
-    if replied:
-        state = "answered"
-    elif slack_reacted_by(last_ask, user_id):
-        state = "acknowledged"
-    else:
-        state = "waiting"
+    state = "answered" if replied or slack_reacted_by(last_ask, user_id) else "waiting"
     return ReplyState(last_ask=last_ask, state=state, tail=ordered[-4:])
 
 
