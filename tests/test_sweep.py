@@ -224,6 +224,7 @@ class TestSlackIsAsk:
             # Carlos, 2026-09-24: a remark that mentions feedback, not a request for it.
             "Also, feedback to you, emotions run high on the Hummingbird topic",
             "I did a review of the kernel build times",
+            "Review of the kernel build times starts Monday.",
             "see <https://x.slack.com/archives/C1/p1?thread_ts=1.2|this>",
             "",
             None,

@@ -13,7 +13,8 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 ### Fixed
 - `slack_is_ask` no longer treats a bare "feedback", "thoughts" or "review" as a
   request: a DM remark such as "feedback to you, emotions run high" was listed
-  as an ask. It now needs "your/any feedback|thoughts|input|review".
+  as an ask. Those words now count only as "your/any feedback|thoughts|input|review",
+  or as an imperative "Review ..." opening a sentence (not "Review of X ...").
 
 ## [2.0.0] - 2026-09-28
 
