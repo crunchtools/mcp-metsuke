@@ -31,6 +31,8 @@ _REQUEST = re.compile(
 )
 # Slack markup: <@U123>, <#C123|name>, <https://...?q=1|label>.
 _SLACK_MARKUP = re.compile(r"<[^<>]*>")
+# Quoted speech and blockquote lines: a question someone else asked, not an ask.
+_QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d|^\s*(?:>|&gt;).*$', re.MULTILINE)
 _THREAD_TS = re.compile(r"[?&]thread_ts=([0-9.]+)")
 
 
@@ -56,12 +58,17 @@ def slack_is_bot(message: dict[str, Any]) -> bool:
 def slack_is_ask(text: str | None) -> bool:
     """True when a message reads as a direct question or request.
 
-    Slack markup (mentions, links) is removed first, so a URL's ``?`` is not a
-    question, and a curly apostrophe is normalized so "Let's talk" still matches.
+    Slack markup (mentions, links) and quoted text (double-quoted spans and
+    blockquote lines) are removed first, so a URL's ``?`` or a quoted question
+    is not an ask, and a curly apostrophe is normalized so "Let's talk" still
+    matches.
     """
-    if not text:
-        return False
-    plain = _SLACK_MARKUP.sub(" ", text).replace("\u2019", "'")
+    return bool(text) and _reads_as_ask(_QUOTED.sub(" ", text or ""))
+
+
+def _reads_as_ask(unquoted: str) -> bool:
+    """``slack_is_ask`` for text whose quoted spans are already removed."""
+    plain = _SLACK_MARKUP.sub(" ", unquoted).replace("\u2019", "'")
     return "?" in plain or bool(_REQUEST.search(plain))
 
 
@@ -79,22 +86,46 @@ class ReplyState:
     tail: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _vocative(name: str) -> re.Pattern[str]:
+    """``name`` used to address someone.
+
+    "Scott, ...", "Hey Scott - ...", "Scott can you ..." (the name opening the
+    message, then punctuation or a request word), or "..., Scott?" closing it.
+    """
+    n = re.escape(name)
+    opener = r"^\s*(?:(?:hey|hi|hello)\s+)?"
+    request_word = r"(?:can|could|would|will|please|pls|do|did|are|any|what|when|how|where)\b"
+    return re.compile(
+        rf"{opener}{n}\b\s*[,:!\-\u2014]|{opener}{n}\s+{request_word}|,\s*{n}\s*[?!.]*\s*$",
+        re.IGNORECASE,
+    )
+
+
 def slack_reply_state(
-    messages: list[dict[str, Any]], user_id: str, is_dm: bool
+    messages: list[dict[str, Any]], user_id: str, one_to_one: bool, first_name: str | None = None
 ) -> ReplyState | None:
     """Decide whether ``user_id`` still owes a reply in a conversation.
 
-    An *ask* is a human message from someone else that @-mentions the user
-    (tagging someone in a channel is directing it at them), or, in a DM, one
-    that reads as a direct question or request (``slack_is_ask``): DM chatter
-    such as "nice!" or "no worries" is not an ask. Once the user has responded,
-    a conversation stays done until someone asks again. An ask is answered
-    when the user posted anywhere in the conversation after it, reacted to it,
-    or replied in its thread (``reply_users``, present when the ask is a
-    top-level message). A later post answers every earlier ask by design: the
-    user's rule is that once they have responded in a conversation, they are
-    done with it (RT #1469). Only a reaction or thread reply is specific to
-    one ask, so only those leave an earlier ask open.
+    An *ask* is a human message from someone else, directed at the user, that
+    reads as one:
+
+    - an @-mention of the user (tagging someone is directing it at them);
+    - in a one-to-one DM (``one_to_one``), a message that reads as a direct
+      question or request (``slack_is_ask``); chatter such as "nice!" is not;
+    - elsewhere (group DMs, channels), a question or request that addresses
+      the user by ``first_name`` ("Scott, can you review?", "any thoughts,
+      Scott?"); a question to the group, or one that merely mentions the name
+      ("Scott reviewed this; can someone else look?"), is not an ask.
+
+    Quoted text (double-quoted spans, blockquote lines) never directs an ask:
+    a relayed "<@user> can you review?" is someone else's request.
+
+    An ask is answered when the user posted anywhere in the conversation after
+    it, reacted to it, or replied in its thread (``reply_users``, present when
+    the ask is a top-level message). A later post answers every earlier ask by
+    design: the user's rule is that once they have responded in a conversation,
+    they are done with it (RT #1469). Only a reaction or thread reply is
+    specific to one ask, so only those leave an earlier ask open.
 
     - ``waiting``: some ask is unanswered; ``last_ask`` is the latest such one.
     - ``answered``: every ask is answered; ``last_ask`` is the latest ask.
@@ -102,16 +133,33 @@ def slack_reply_state(
     ``tail`` is the last four messages; see ``slack_tail_from`` for channel
     history, where those may be unrelated.
 
-    Returns None when nothing in the conversation asks the user anything.
+    Args:
+        messages: Slack message dicts as ``conversations.history`` or
+            ``conversations.replies`` return them. Fields read: ``user`` (author
+            ID), ``ts`` (timestamp string), ``text``, ``reactions`` (list of
+            ``{"name", "users"}``), ``reply_users`` (IDs who replied in the
+            message's thread), and the bot markers ``bot_id``, ``subtype``,
+            ``username`` and ``user_profile.name``. Any order.
+        user_id: The user whose replies are being tracked.
+        one_to_one: True for a one-to-one DM; False for group DMs and channels.
+        first_name: The user's first name, for direct address outside 1:1 DMs.
+
+    Returns:
+        The conversation's ``ReplyState``, or None when nothing in it asks the
+        user anything.
     """
     ordered = sorted(messages, key=lambda m: float(m.get("ts") or 0))
     mention = f"<@{user_id}>"
+    named = _vocative(first_name) if first_name else None
 
     def directed(msg: dict[str, Any]) -> bool:
         if msg.get("user") == user_id or slack_is_bot(msg):
             return False
-        text = msg.get("text") or ""
-        return mention in text or (is_dm and slack_is_ask(text))
+        own_words = _QUOTED.sub(" ", msg.get("text") or "")
+        if mention in own_words:
+            return True
+        addressed = one_to_one or bool(named and named.search(own_words))
+        return addressed and _reads_as_ask(own_words)
 
     asks = [m for m in ordered if directed(m)]
     if not asks:

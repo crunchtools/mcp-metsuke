@@ -8,6 +8,20 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-28
+
+### Added
+- `slack_waiting` option `first_name`: in group DMs and channels, a question or
+  request that names the user ("Scott, can you review?") is an ask.
+
+### Fixed
+- Group DMs no longer treat any question as an ask of the user. Only an
+  @-mention or a `first_name` address counts there; a question to the group
+  ("isn't Aquasec on the west coast?") does not. One-to-one DMs are unchanged.
+- `slack_is_ask` ignores quoted text (double-quoted spans and blockquote
+  lines), so relaying someone else's question ("my PO was like \"Why does
+  Scott want...?\"") is not an ask.
+
 ## [2.0.2] - 2026-09-28
 
 ### Fixed

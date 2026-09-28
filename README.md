@@ -145,6 +145,7 @@ window: from that hour on the previous weekday until the run.
 | | `handle` | yes | | 1-64 chars |
 | | `backend` | | `slack` | ≤64 chars |
 | | `self_label` | | `you` | ≤64 chars |
+| | `first_name` | | none | 1-64 chars; in group DMs and channels, a question or request that addresses the user by this name is an ask |
 | | `lookback_days` | | 7 | 1-30 |
 | | `max_conversations` | | 40 | 1-100 |
 | | `workspace_url` | | `https://redhat-internal.slack.com` | ≤200 chars |
