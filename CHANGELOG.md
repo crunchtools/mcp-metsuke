@@ -8,7 +8,15 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-28
+
 ### Fixed
+- `feed_entries` no longer marks the section partial when a category has no
+  entries. The gateway returns an empty list as empty text, which was reported
+  as "unparseable result (0 chars)".
+- `feed_entries` anchors its lookback on the sweep window's start (or
+  `since_days` ago, whichever is earlier) via `published_after`. A rolling
+  `since_days` let a Monday-afternoon re-run drop Friday morning's entries.
 - The container image's `version` label read 0.5.1; it now matches the release,
   and a test keeps the label, package, and `server.json` versions in sync.
 
