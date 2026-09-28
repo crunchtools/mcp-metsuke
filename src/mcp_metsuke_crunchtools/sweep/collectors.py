@@ -343,10 +343,11 @@ async def _read_conversation(
     _count_ok(section)
 
     state = parsers.slack_reply_state(messages, opts.user_id, conv["is_dm"])
-    if state is None and not complete and conv["latest_hit"]:
+    hit = conv["latest_hit"]
+    if state is None and not complete and hit and hit["ts"] not in {m.get("ts") for m in messages}:
         # The search hit that surfaced this conversation lies beyond the pages
         # read: whether it asks anything is unknown, so keep it for the reader.
-        state = parsers.ReplyState(last_ask=conv["latest_hit"], state="unverified")
+        state = parsers.ReplyState(last_ask=hit, state="unverified")
     if state is None:
         section["stats"]["dropped_no_ask"] += 1
         return None, False

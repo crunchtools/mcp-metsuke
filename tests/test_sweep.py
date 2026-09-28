@@ -1420,11 +1420,17 @@ class TestSlackPageFailure:
         assert record["state"] == "unverified"
         assert any("later page: boom" in e for e in sweep["sections"]["slack"]["errors"])
 
-    @pytest.mark.parametrize(("complete", "kept"), [(False, True), (True, False)])
-    async def test_no_ask_in_pages_read(self, complete: bool, kept: bool) -> None:
-        # The first page is chatter; the hit that mentioned Scott is on a page
-        # that failed. An incomplete read cannot prove there was no ask.
+    @pytest.mark.parametrize(
+        ("complete", "hit_read", "kept"),
+        [(False, False, True), (True, False, False), (False, True, False)],
+    )
+    async def test_no_ask_in_pages_read(self, complete: bool, hit_read: bool, kept: bool) -> None:
+        # The first page is chatter. When the hit that surfaced the thread is on
+        # a page that failed, an incomplete read cannot prove there was no ask;
+        # when the hit was read and is not an ask, it can.
         chatter = [{"user": "U1", "ts": "1790286385.234649", "text": "root message"}]
+        if hit_read:
+            chatter.append({"user": "U03QPSY9SEL", "ts": "1790290000.000100", "text": "cool"})
 
         more = {} if complete else {"has_more": True, "response_metadata": {"next_cursor": "c"}}
         first_page = _ok({"messages": chatter, **more})
