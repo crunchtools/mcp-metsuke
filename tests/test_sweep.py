@@ -212,6 +212,8 @@ class TestSlackIsAsk:
             "Draft is up. Review when you can",
             "Any concerns? Review the PR before merge.",
             "Review notes before the meeting.",
+            "Status: Review the PR before merge.",
+            "Big day! Review the PR before merge.",
         ],
     )
     def test_asks(self, text: str) -> None:
