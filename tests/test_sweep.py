@@ -513,6 +513,57 @@ class TestCalendarParser:
         assert events["Remote US OH (Office)"]["description"] == ""
 
 
+IMAGE_REQUEST_FORM = """- CONTACT INFORMATION ---
+Name: Alice
+Email: alice@example.com
+Company: Example Corp
+
+    - TECHNICAL SPECS ---
+Image Name: Nightjar
+Version: 3.18
+Purpose: Mirror registry on air-gapped networks
+
+Architecture: x86_64
+
+    - ADDITIONAL CONTEXT ---
+Scanners report a high CVE count. Version: whichever is newest. Can you help?"""
+
+PROBLEM_REPORT_FORM = """- CONTACT ---
+Email: bob@example.org
+
+    - REPORT ---
+Page URL: https://images.example.net/?name=nightjar
+Description: nightjar 3.12 still ships a vulnerable setuptools"""
+
+
+class TestJiraParsers:
+    def test_image_request_form_first_value_wins(self) -> None:
+        fields = parsers.jira_form_fields(IMAGE_REQUEST_FORM)
+        assert fields["name"] == "Alice"
+        assert fields["email"] == "alice@example.com"
+        assert fields["company"] == "Example Corp"
+        # The trailing free-text "Version:" must not overwrite the spec field.
+        assert fields["version"] == "3.18"
+
+    def test_problem_report_form(self) -> None:
+        fields = parsers.jira_form_fields(PROBLEM_REPORT_FORM)
+        assert fields["email"] == "bob@example.org"
+        assert fields["page url"] == "https://images.example.net/?name=nightjar"
+        assert fields["description"].endswith("vulnerable setuptools")
+
+    def test_hand_filed_ticket_has_no_fields(self) -> None:
+        assert parsers.jira_form_fields("Clarify image request delivery expectations") == {}
+        assert parsers.jira_form_fields(None) == {}
+
+    def test_search_issues_unwraps_and_filters(self) -> None:
+        issues = [{"key": "PROJ-1"}]
+        assert parsers.jira_search_issues({"total": 1, "issues": issues}) == issues
+        assert parsers.jira_search_issues({"result": {"issues": issues}}) == issues
+        assert parsers.jira_search_issues({"issues": [*issues, "junk"]}) == issues
+        assert parsers.jira_search_issues([]) == []
+        assert parsers.jira_search_issues({"total": 0}) == []
+
+
 # --- client ---------------------------------------------------------------
 
 
@@ -958,6 +1009,111 @@ class TestFeedsCollector:
         ]
 
 
+JIRA_ISSUES = [
+    {
+        "key": "PROJ-101",
+        "summary": "[Customer Image Request] Nightjar 3.18",
+        "description": IMAGE_REQUEST_FORM,
+        "status": {"name": "New"},
+        "issue_type": {"name": "Story"},
+        "components": ["Image Request"],
+        "created": "2026-09-26T18:45:27.798+0000",
+    },
+    {
+        "key": "PROJ-102",
+        "summary": "[Problem Report] vulnerable setuptools in nightjar 3.12",
+        "description": PROBLEM_REPORT_FORM,
+        "status": {"name": "New"},
+        "issue_type": {"name": "Story"},
+        "components": ["Problem Report"],
+        "created": "2026-09-20T14:01:58.340+0000",
+    },
+]
+
+JIRA_STEP = {
+    "section": "tickets",
+    "collector": "jira_issues",
+    "options": {
+        "queries": [
+            {"label": "new", "jql": 'project = PROJ AND created >= "{since}"', "limit": 30},
+            {"label": "open", "jql": "project = PROJ AND status = New AND created <= -30d"},
+        ]
+    },
+}
+
+
+class TestJiraCollector:
+    async def test_since_substitution_and_form_parsing(self) -> None:
+        gw = FakeGateway(lambda b, t, a: _ok({"total": 2, "issues": JIRA_ISSUES}))
+        sweep = await run_sweep(SweepSpec(steps=[JIRA_STEP]), gw, now=NOW)
+        section = sweep["sections"]["tickets"]
+        assert section["status"] == "ok"
+        assert section["stats"]["since"] == "2026-09-25 06:00"
+        # Only the query carrying the placeholder is rewritten.
+        assert [a["jql"] for _, _, a in gw.calls] == [
+            'project = PROJ AND created >= "2026-09-25 06:00"',
+            "project = PROJ AND status = New AND created <= -30d",
+        ]
+        assert [a["limit"] for _, _, a in gw.calls] == [30, 25]
+        assert all(a["fields"].startswith("summary,status") for _, _, a in gw.calls)
+
+        record = section["records"][0]
+        assert record["query"] == "new"
+        assert record["url"] == "https://redhat.atlassian.net/browse/PROJ-101"
+        assert record["contact"] == {
+            "name": "Alice",
+            "email": "alice@example.com",
+            "company": "Example Corp",
+        }
+        assert record["detail"] == (
+            "image name: Nightjar | version: 3.18 | purpose: Mirror registry on air-gapped networks"
+        )
+        assert record["age_days"] == 0.7
+        assert section["records"][1]["detail"].startswith("page url: https://images.example.net")
+        # Both queries ran, so each issue appears once per query.
+        assert len(section["records"]) == 4
+
+    async def test_flagged_result_withholds_text(self) -> None:
+        gw = FakeGateway(lambda b, t, a: _ok({"issues": JIRA_ISSUES[:1]}, flagged=True))
+        sweep = await run_sweep(SweepSpec(steps=[JIRA_STEP]), gw, now=NOW)
+        record = sweep["sections"]["tickets"]["records"][0]
+        assert record["flagged"] is True
+        assert record["summary"] is None
+        assert record["detail"] is None
+        assert set(record["contact"].values()) == {None}
+        # The metadata a reader needs to open the ticket survives.
+        assert (record["key"], record["status"], record["issue_type"]) == (
+            "PROJ-101",
+            "New",
+            "Story",
+        )
+
+    async def test_one_failed_query_is_partial_and_the_rest_run(self) -> None:
+        def route(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult:
+            # Only the "new" query dates its search, so only it fails.
+            is_new = "created >=" in args["jql"]
+            return (
+                GatewayResult(text="", error="boom") if is_new else _ok({"issues": JIRA_ISSUES[:1]})
+            )
+
+        sweep = await run_sweep(SweepSpec(steps=[JIRA_STEP]), FakeGateway(route), now=NOW)
+        section = sweep["sections"]["tickets"]
+        assert section["status"] == "partial"
+        assert section["errors"] == ["query new: boom"]
+        assert [r["query"] for r in section["records"]] == ["open"]
+
+    async def test_records_are_capped_across_queries(self) -> None:
+        page = {"issues": [{"key": f"PROJ-{n}"} for n in range(60)]}
+        gw = FakeGateway(lambda b, t, a: _ok(page))
+        step = {**JIRA_STEP, "options": {**JIRA_STEP["options"], "detail_chars": 0}}
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        records = sweep["sections"]["tickets"]["records"]
+        assert len(records) == 100
+        assert records[0]["created"] is None
+        assert records[0]["age_days"] is None
+        assert records[0]["detail"] is None
+
+
 # --- engine / validation --------------------------------------------------
 
 
@@ -973,6 +1129,19 @@ class TestSpecValidation:
     def test_bad_options_rejected(self) -> None:
         with pytest.raises(ValidationError):
             SweepSpec(steps=[{"section": "x", "collector": "slack_waiting", "options": {}}])
+
+    def test_bad_jira_query_rejected(self) -> None:
+        for queries in ([], [{"label": "New", "jql": "project = PROJ"}], [{"label": "new"}]):
+            with pytest.raises(ValidationError):
+                SweepSpec(
+                    steps=[
+                        {
+                            "section": "t",
+                            "collector": "jira_issues",
+                            "options": {"queries": queries},
+                        }
+                    ]
+                )
 
     def test_duplicate_sections_rejected(self) -> None:
         with pytest.raises(ValidationError):

@@ -131,6 +131,7 @@ flags are stored as metadata only, with their text withheld.
 | `gmail_waiting` | Inbox threads in the window (or `lookback_days`) where the backend's ownership analysis says the ball is in the user's court; automated mail, bare calendar notices and threads newer than `min_age_hours` dropped, invitations kept, `priority_senders` marked `priority` |
 | `calendar_day` | The report day's meetings, pending invites over a lookahead, and hard overlaps |
 | `feed_entries` | Recent entries per feed category (read or unread), with a longer window after a weekend |
+| `jira_issues` | Issues matching each named JQL query, with `{since}` substituted by the window start. Each record carries the key, browse link, status, components and age; where the description is a web intake form, its `Field: value` pairs are parsed into `contact` and a capped `detail` line. A failing query is recorded and the rest still run |
 
 ### Collector options
 
@@ -166,6 +167,10 @@ window: from that hour on the previous weekday until the run.
 | | `backend` | | `feeds` | |
 | | `since_days` | | 1 | 1-30 |
 | | `since_days_after_weekend` | | 3 | 1-30 (Mondays and weekend runs) |
+| `jira_issues` | `queries` | yes | | 1-6 of `{"label", "jql", "limit"}`: label `[a-z0-9_-]` ≤32, jql ≤600 chars (`{since}` → window start as `YYYY-MM-DD HH:mm`), limit 1-50 |
+| | `backend` | | `jira` | ≤64 chars; needs `jira_search` allowed |
+| | `browse_url` | | `https://redhat.atlassian.net/browse/` | ≤200 chars, prefixed to the issue key |
+| | `detail_chars` | | 800 | 0-2000 (0 = no form detail line) |
 
 Collectors are code in `sweep/collectors.py`, not configuration: a definition
 can only pick and parameterize them. A bad spec is rejected at

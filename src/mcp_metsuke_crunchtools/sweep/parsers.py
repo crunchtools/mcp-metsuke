@@ -412,3 +412,37 @@ def event_end(event: dict[str, Any]) -> datetime | None:
         return datetime.fromisoformat(event["end"])
     except (KeyError, ValueError):
         return None
+
+
+# --- Jira ----------------------------------------------------------------
+
+# The images.redhat.com intake forms write flat "Field: value" lines under
+# dashed section headers ("- CONTACT INFORMATION ---", "- REPORT ---").
+_FORM_FIELD = re.compile(r"^[ \t]*(?P<name>[A-Za-z][A-Za-z /]{1,30}):[ \t]*(?P<value>\S.*)$", re.M)
+
+
+def jira_search_issues(payload: Any) -> list[dict[str, Any]]:
+    """The issue dicts of a jira_search result, tolerating a ``result`` wrapper."""
+    if isinstance(payload, dict) and "issues" not in payload:
+        payload = payload.get("result")
+    if isinstance(payload, dict):
+        payload = payload.get("issues")
+    if not isinstance(payload, list):
+        return []
+    return [issue for issue in payload if isinstance(issue, dict)]
+
+
+def jira_form_fields(description: str | None) -> dict[str, str]:
+    """An intake form's ``Field: value`` pairs, keyed by lowercased field name.
+
+    Both form layouts are flat pairs: an image request carries Name, Email and
+    Company plus technical specs, a problem report carries Email, Page URL and
+    Description. The first occurrence of a name wins, so trailing free-text
+    context cannot overwrite a form field. A ticket filed by hand has no pairs
+    and yields ``{}``, leaving the record to render without contact details.
+    """
+    # Built back to front, so the earliest pair for a name is the one left standing.
+    return {
+        m["name"].strip().lower(): m["value"].strip()
+        for m in reversed(list(_FORM_FIELD.finditer(description or "")))
+    }

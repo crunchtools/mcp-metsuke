@@ -81,6 +81,20 @@ FREE_TEXT_EVENT_FIELDS = (
     "attendees",
 )
 
+# Jira
+MAX_JIRA_QUERIES = 6
+MAX_JIRA_RECORDS = 100
+MAX_JQL_CHARS = 600
+# jira_search refuses a limit above 50.
+JIRA_SEARCH_LIMIT = 50
+DEFAULT_JIRA_LIMIT = 25
+DEFAULT_JIRA_DETAIL_CHARS = 800
+MAX_JIRA_DETAIL_CHARS = 2000
+JIRA_FIELDS = "summary,status,issuetype,created,components,description"
+JIRA_CONTACT_FIELDS = ("name", "email", "company")
+# Intake-form fields worth a line in the briefing, in the order they read best.
+JIRA_DETAIL_FIELDS = ("image name", "version", "purpose", "page url", "description")
+
 # Feeds
 MAX_FEED_CATEGORIES = 12
 MAX_CATEGORY_ID_DIGITS = 9
@@ -832,7 +846,110 @@ async def feed_entries(
     return _finish(section)
 
 
-CollectorName = Literal["slack_waiting", "gmail_waiting", "calendar_day", "feed_entries"]
+# --- Jira ----------------------------------------------------------------
+
+
+class JiraQuery(BaseModel, extra="forbid"):
+    """One named JQL query the jira_issues collector runs."""
+
+    label: str = Field(..., min_length=1, max_length=32, pattern=r"^[a-z0-9_-]+$")
+    jql: str = Field(..., min_length=1, max_length=MAX_JQL_CHARS)
+    limit: int = Field(default=DEFAULT_JIRA_LIMIT, ge=1, le=JIRA_SEARCH_LIMIT)
+
+
+class JiraOptions(BaseModel, extra="forbid"):
+    """Options for the jira_issues collector."""
+
+    queries: list[JiraQuery] = Field(..., min_length=1, max_length=MAX_JIRA_QUERIES)
+    backend: str = Field(default="jira", min_length=1, max_length=MAX_BACKEND_NAME)
+    browse_url: str = Field(default="https://redhat.atlassian.net/browse/", max_length=200)
+    detail_chars: int = Field(default=DEFAULT_JIRA_DETAIL_CHARS, ge=0, le=MAX_JIRA_DETAIL_CHARS)
+
+
+def _jira_created(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _jira_detail(form: dict[str, str], limit: int) -> str | None:
+    """The form's non-contact fields as one capped line, or None when there are none."""
+    if not limit:
+        return None
+    detail = " | ".join(f"{name}: {form[name]}" for name in JIRA_DETAIL_FIELDS if form.get(name))
+    return detail[:limit] or None
+
+
+def _jira_record(
+    issue: dict[str, Any], label: str, opts: JiraOptions, now: datetime, flagged: bool
+) -> dict[str, Any]:
+    """One issue as a record; a flagged result keeps only its non-text fields."""
+    created = _jira_created(issue.get("created"))
+    form = {} if flagged else parsers.jira_form_fields(issue.get("description"))
+    return {
+        "query": label,
+        "key": issue.get("key"),
+        "url": f"{opts.browse_url}{issue.get('key')}",
+        "issue_type": (issue.get("issue_type") or {}).get("name"),
+        "status": (issue.get("status") or {}).get("name"),
+        "components": issue.get("components") or [],
+        "created": created.isoformat() if created else None,
+        "age_days": _age_days(created, now) if created else None,
+        "summary": None if flagged else issue.get("summary"),
+        "contact": {name: form.get(name) for name in JIRA_CONTACT_FIELDS},
+        "detail": _jira_detail(form, opts.detail_chars),
+        "flagged": flagged,
+    }
+
+
+async def jira_issues(
+    gw: Gateway, window: Window, now: datetime, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Issues matching each named JQL query, with any intake-form fields parsed.
+
+    ``{since}`` in a query becomes the window start as a JQL datetime in the
+    window's zone, so ``created >= "{since}"`` reads "since the last report".
+    A query without the placeholder is sent unchanged.
+
+    Queries run in order and share one ``MAX_JIRA_RECORDS`` budget; a query
+    that fails is recorded and the remaining ones still run. The intake forms
+    on the request page put the reporter's name, address and technical specs
+    in the description, so a flagged result withholds ``summary``, ``detail``
+    and ``contact`` and keeps only the key, link, status and dates.
+    """
+    opts = JiraOptions(**options)
+    section = _section("jira_issues")
+    since = window.start.strftime("%Y-%m-%d %H:%M")
+    section["stats"]["since"] = since
+    for query in opts.queries:
+        res = await gw.call(
+            opts.backend,
+            "jira_search",
+            {
+                "jql": query.jql.replace("{since}", since),
+                "limit": query.limit,
+                "fields": JIRA_FIELDS,
+            },
+        )
+        if not res.ok:
+            _note_error(section, f"query {query.label}", res)
+            continue
+        _count_ok(section)
+        try:
+            payload = res.json() if res.text.strip() else []
+        except ValueError:
+            _note_error(section, f"query {query.label}", _bad_json(res))
+            continue
+        room = MAX_JIRA_RECORDS - len(section["records"])
+        for issue in parsers.jira_search_issues(payload)[: max(0, room)]:
+            section["records"].append(_jira_record(issue, query.label, opts, now, res.flagged))
+    return _finish(section)
+
+
+CollectorName = Literal[
+    "slack_waiting", "gmail_waiting", "calendar_day", "feed_entries", "jira_issues"
+]
 
 Collector = Callable[["Gateway", Window, datetime, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -841,6 +958,7 @@ COLLECTORS: dict[str, Collector] = {
     "gmail_waiting": gmail_waiting,
     "calendar_day": calendar_day,
     "feed_entries": feed_entries,
+    "jira_issues": jira_issues,
 }
 
 OPTION_MODELS: dict[str, type[BaseModel]] = {
@@ -848,4 +966,5 @@ OPTION_MODELS: dict[str, type[BaseModel]] = {
     "gmail_waiting": GmailOptions,
     "calendar_day": CalendarOptions,
     "feed_entries": FeedOptions,
+    "jira_issues": JiraOptions,
 }
