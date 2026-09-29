@@ -8,6 +8,17 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-29
+
+### Added
+- `jira_issues` collector: runs up to six named JQL queries per sweep, with
+  `{since}` substituted by the window start, and turns each issue into a record
+  carrying its key, link, status, components, age, and — for issues filed by a
+  web intake form — the form's contact fields and specs parsed out of the
+  description. A failing query is recorded and the rest still run; a flagged
+  result keeps only its non-text fields. Requires the sweep profile to grant
+  the Jira backend `jira_search` (read-only).
+
 ## [2.1.1] - 2026-09-28
 
 ### Fixed
