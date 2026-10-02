@@ -16,6 +16,13 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # pyproject pins fastmcp<4 / mcp<2 (McpError rename crash-looped 1.2.0);
+      # Dependabot bumped uv.lock past those pins anyway (#19).
+      - dependency-name: "fastmcp"
+        versions: [">=4"]
+      - dependency-name: "mcp"
+        versions: [">=2"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
