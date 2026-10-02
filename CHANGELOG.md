@@ -9,6 +9,8 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 ## [Unreleased]
 
 ### Fixed
+- The FastMCP server advertised version 2.1.1; it now reports the package
+  version from `__version__`.
 - `uv.lock` back on fastmcp 3.4.7 / mcp 1.30.0, inside the pyproject pins.
   Dependabot's #19 locked fastmcp 4 and mcp 2, which broke CI's type check;
   Dependabot now skips those majors.
