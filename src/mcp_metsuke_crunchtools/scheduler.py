@@ -118,7 +118,11 @@ async def _post_alert(
     token = cfg.alert_token
     if not (cfg.trentina_alert_url and token):
         raise CallbackNotConfiguredError
-    url = f"{cfg.trentina_alert_url}/alert/{token.get_secret_value()}"
+    # The token rides in a header, never the URL: every access log on the way
+    # records the request line, and httpx names the URL in the error text that
+    # CallbackDispatchError carries (Trentina #333).
+    url = f"{cfg.trentina_alert_url}/alert"
+    headers = {"Authorization": f"Bearer {token.get_secret_value()}"}
     body: dict[str, str] = {"report": name}
     if run_id is not None:
         body["run_id"] = run_id
@@ -128,7 +132,7 @@ async def _post_alert(
     if sweep_status is not None:
         body["sweep_status"] = sweep_status
     try:
-        resp = await client.post(url, json=body, timeout=_HTTP_TIMEOUT)
+        resp = await client.post(url, json=body, headers=headers, timeout=_HTTP_TIMEOUT)
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise CallbackDispatchError(name, str(exc)) from exc

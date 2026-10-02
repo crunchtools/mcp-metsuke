@@ -76,7 +76,7 @@ claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 |----------|---------|-------------|
 | `METSUKE_DB` | `~/.local/share/mcp-metsuke/metsuke.db` | SQLite database path |
 | `METSUKE_DB_FILE` | (none) | Path whose contents override `METSUKE_DB` (container secret-file convention) |
-| `TRENTINA_ALERT_URL` | (none) | Base URL of the Trentina alert endpoint the scheduler POSTs gather callbacks to |
+| `TRENTINA_ALERT_URL` | (none) | Base URL of the Trentina gateway; the scheduler POSTs gather callbacks to `<url>/alert` with the token as `Authorization: Bearer` |
 | `METSUKE_ALERT_TOKEN` | (none) | Alert token identifying the reports profile; enables the scheduler when set with `TRENTINA_ALERT_URL` |
 | `METSUKE_ALERT_TOKEN_FILE` | (none) | Path whose contents override `METSUKE_ALERT_TOKEN` (container secret-file convention) |
 | `TRENTINA_GATEWAY_URL` | (none) | Trentina gateway MCP endpoint for the sweep profile, e.g. `http://mcp-trentina:8019/gateway/metsuke-sweep/mcp`. Plain HTTP is accepted only for internal hosts (single-label service names, localhost, private IPs); anything else must be HTTPS |

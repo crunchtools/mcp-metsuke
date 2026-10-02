@@ -8,6 +8,17 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-01
+
+### Changed
+- The gather callback sends the alert token as `Authorization: Bearer` to
+  `<TRENTINA_ALERT_URL>/alert`, not in the URL path (Trentina #333). The URL
+  is in every access log on the way, and httpx names it in the error text a
+  failed callback carries.
+
+**Upgrade:** breaking: needs Trentina 0.52.0 or later, which accepts only the
+header. Deploy the two together.
+
 ## [2.2.0] - 2026-09-29
 
 ### Added

@@ -119,6 +119,8 @@ class _FakeResponse:
 
 class _FakeClient:
     posted: ClassVar[list[dict[str, object]]] = []
+    # (url, headers) of each post, so a test can see where the token went.
+    sent: ClassVar[list[tuple[str, dict[str, str]]]] = []
 
     async def __aenter__(self) -> _FakeClient:
         return self
@@ -126,8 +128,11 @@ class _FakeClient:
     async def __aexit__(self, *_: object) -> bool:
         return False
 
-    async def post(self, url: str, json: dict[str, object], timeout: float) -> _FakeResponse:
+    async def post(
+        self, url: str, json: dict[str, object], headers: dict[str, str], timeout: float
+    ) -> _FakeResponse:
         _FakeClient.posted.append(json)
+        _FakeClient.sent.append((url, headers))
         return _FakeResponse()
 
 
@@ -404,6 +409,22 @@ class TestScheduledCallbackSpec:
             cast("httpx.AsyncClient", client), config_mod.get_config(), "r", "r@1"
         )
         assert _FakeClient.posted[-1] == {"report": "r", "run_id": "r@1"}
+
+    @pytest.mark.asyncio
+    async def test_the_token_is_a_header_not_in_the_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Trentina #333: a URL is in every access log and every httpx error."""
+        monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
+        monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
+        config_mod._config = None
+        _FakeClient.sent.clear()
+        await scheduler._post_alert(
+            cast("httpx.AsyncClient", _FakeClient()), config_mod.get_config(), "r", "r@1"
+        )
+        url, headers = _FakeClient.sent[-1]
+        assert url == "http://trentina:8019/alert"
+        assert headers == {"Authorization": "Bearer test-token"}
 
     @pytest.mark.asyncio
     async def test_scheduled_tick_sends_spec(
