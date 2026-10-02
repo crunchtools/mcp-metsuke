@@ -6,6 +6,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from . import __version__
 from .models import (
     DeleteOutputParams,
     Finding,
@@ -34,7 +35,7 @@ from .tools import (
 
 mcp = FastMCP(
     "mcp-metsuke-crunchtools",
-    version="2.1.1",
+    version=__version__,
     instructions=(
         "Stateful reports catalog with a built-in scheduler and run lifecycle. "
         "Metsuke stores report DEFINITIONS (what to gather, which agent owns the "
