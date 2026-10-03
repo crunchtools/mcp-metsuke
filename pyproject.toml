@@ -1,6 +1,6 @@
 [project]
 name = "mcp-metsuke-crunchtools"
-version = "3.0.0"
+version = "3.1.0"
 description = "Stateful reports catalog MCP server (definitions + gathered outputs)"
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
@@ -18,12 +18,14 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    # Majors pinned: the container resolves with plain pip, not uv.lock, and
-    # fastmcp 4 / mcp 2 renamed McpError (1.2.0 crash-looped on deploy).
-    "fastmcp>=3.4,<4",
-    "mcp>=1.29,<2",
+    # Majors pinned: the container resolves with plain pip, not uv.lock, so a
+    # new major must be ported first (fastmcp 4 / mcp 2 crash-looped 1.2.0).
+    "fastmcp>=4.0,<5",
+    "mcp>=2.2,<3",
     "pydantic>=2.0",
     "httpx>=0.27",
+    # fastmcp 4 transports raise httpx2 errors, which the sweep client catches.
+    "httpx2>=2.13",
     "croniter>=2.0",
 ]
 
