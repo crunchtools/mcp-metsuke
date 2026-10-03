@@ -8,12 +8,21 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-03
+
+### Changed
+- On fastmcp 4 / mcp 2 (#27). The pins move to `fastmcp>=4.0,<5` and
+  `mcp>=2.2,<3`, and Dependabot now skips the next majors instead.
+- A tool called with invalid parameters now fails as a JSON-RPC "invalid
+  params" error rather than an `is_error` tool result (fastmcp 4 behavior).
+  Callers still get an error; only its shape changed.
+
 ### Fixed
+- The sweep client also treats fastmcp 4's `httpx2` transport errors as a
+  source being unavailable. Without it, a gateway timeout would have aborted
+  the sweep instead of being recorded on the section.
 - The FastMCP server advertised version 2.1.1; it now reports the package
   version from `__version__`.
-- `uv.lock` back on fastmcp 3.4.7 / mcp 1.30.0, inside the pyproject pins.
-  Dependabot's #19 locked fastmcp 4 and mcp 2, which broke CI's type check;
-  Dependabot now skips those majors.
 
 ### Changed
 

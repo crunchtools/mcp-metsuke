@@ -25,10 +25,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx
+import httpx2
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ClientError
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -44,7 +45,15 @@ MAX_ERROR_CHARS = 500
 # being "unavailable".
 _SERVICE_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
-CALL_FAILURES = (McpError, ClientError, httpx.HTTPError, TimeoutError, ConnectionError)
+# fastmcp 4 transports run on httpx2, whose errors do not subclass httpx's.
+CALL_FAILURES = (
+    MCPError,
+    ClientError,
+    httpx.HTTPError,
+    httpx2.HTTPError,
+    TimeoutError,
+    ConnectionError,
+)
 
 
 @dataclass(frozen=True)

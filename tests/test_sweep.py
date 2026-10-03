@@ -15,14 +15,15 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx as httpx_module
+import httpx2
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_headers
 from fastmcp.utilities.tests import run_server_async
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, TextContent
+from mcp.shared.exceptions import MCPError
+from mcp.types import TextContent
 from pydantic import ValidationError
 
 from mcp_metsuke_crunchtools import config as config_mod
@@ -949,6 +950,54 @@ class TestCalendarCollector:
         assert "Open office" not in records
         assert records["Aqua support"]["overlaps"] == ["2026-09-28T08:15:00-04:00"]
         assert gw.calls[0][2]["time_min"].startswith("2026-09-28")
+
+    async def test_recurring_resource_calendar_meeting_is_kept(self) -> None:
+        # Issue #32: the 9:00 Daily Scrum (a recurring instance organized by a
+        # resource calendar, after a multi-line description, among mostly
+        # declined attendees) must be a meeting. The 2026-09-28 sweep kept it;
+        # the gatherer dropped it from the briefing.
+        gw = FakeGateway(lambda b, t, a: _ok(SCRUM_TEXT))
+        step = {
+            "section": "calendar",
+            "collector": "calendar_day",
+            "options": {"backend": "gw-work", "account": "me@x.com"},
+        }
+        sweep = await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        records = sweep["sections"]["calendar"]["records"]
+        assert [(r["start"][11:16], r["kind"]) for r in records] == [
+            ("08:30", "meeting"),
+            ("09:00", "meeting"),
+            ("09:30", "meeting"),
+        ]
+
+
+SCRUM_TEXT = """Successfully retrieved 3 events from calendar 'primary' for me@x.com:
+- "Fedora follow-up" (Starts: 2026-09-28T08:30:00-04:00, Ends: 2026-09-28T08:55:00-04:00)
+  Description: Hello,
+
+The purpose of this meeting is to follow up.
+
+Note: we&#39;ll probably record the conversation.
+  Location: No Location
+  Attendee Details: fred@x.com: accepted (organizer)
+    me@x.com: accepted
+  ID: f1 | Link: https://cal/f1
+- "HUM: Daily Scrum" (Starts: 2026-09-28T09:00:00-04:00, Ends: 2026-09-28T09:30:00-04:00)
+  Description: <p dir="ltr">Standup: What did I do? What's blocking me?</p>
+  Location: Hummingbird
+  Organizer: Hummingbird <c_188e@resource.calendar.google.com>
+  Attendee Details: c_188e@resource.calendar.google.com: accepted (organizer)
+    a@x.com: declined
+    team@x.com: needsAction
+    me@x.com: accepted
+  ID: s1_20260928T130000Z | Link: https://cal/s1
+- "Scanner certification" (Starts: 2026-09-28T09:30:00-04:00, Ends: 2026-09-28T10:00:00-04:00)
+  Description: <b>Goals</b>
+<ul><li>Certify two vendors.</li></ul>
+  Attendees: c@x.com
+  Attendee Details: c@x.com: accepted
+  ID: v1 | Link: https://cal/v1
+"""
 
 
 class TestFeedsCollector:
@@ -2027,10 +2076,12 @@ class TestGetSweepThroughMcp:
         async with Client(server.mcp) as client:
             index = await client.call_tool("get_sweep_tool", {"run_id": run["run_id"]})
             page = await client.call_tool("get_sweep_tool", {"report_name": "r", "section": "s"})
-            bad = await client.call_tool("get_sweep_tool", {"section": "s"}, raise_on_error=False)
+            # fastmcp 4 reports a parameter ValidationError as JSON-RPC
+            # "invalid params", not as an is_error tool result.
+            with pytest.raises(MCPError, match="Invalid request parameters"):
+                await client.call_tool("get_sweep_tool", {"section": "s"})
         assert index.structured_content["sections"]["s"]["record_count"] == 1
         assert page.structured_content["records"] == [{"a": 1}]
-        assert bad.is_error
 
 
 class TestGmailCapTruncation:
@@ -2135,7 +2186,8 @@ class TestGatewayTransportFailures:
             ConnectionError("reset"),
             TimeoutError("slow"),
             httpx_module.ReadTimeout("read timeout"),
-            McpError(ErrorData(code=-32000, message="session gone")),
+            httpx2.ReadTimeout("read timeout"),
+            MCPError(code=-32000, message="session gone"),
         ],
     )
     async def test_call_failure_becomes_error_result(self, exc: BaseException) -> None:
