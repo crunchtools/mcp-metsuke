@@ -7,12 +7,12 @@
     "url": "https://github.com/crunchtools/mcp-metsuke",
     "source": "github"
   },
-  "version": "3.1.0",
+  "version": "3.2.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-metsuke-crunchtools",
-      "version": "3.1.0",
+      "version": "3.2.0",
       "transport": {
         "type": "stdio"
       }

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
 
 from mcp_metsuke_crunchtools import config as config_mod
+from mcp_metsuke_crunchtools import database as db_mod
 from mcp_metsuke_crunchtools import scheduler
 from mcp_metsuke_crunchtools.errors import (
     CallbackNotConfiguredError,
@@ -26,6 +27,7 @@ from mcp_metsuke_crunchtools.tools.definitions import (
 from mcp_metsuke_crunchtools.tools.outputs import (
     delete_output,
     get_output,
+    get_sweep,
     list_outputs,
     prune_outputs,
     save_output,
@@ -33,6 +35,7 @@ from mcp_metsuke_crunchtools.tools.outputs import (
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Awaitable, Callable
 
     import httpx
 
@@ -49,6 +52,134 @@ class TestToolCount:
     async def test_tool_count(self) -> None:
         tools = await mcp.list_tools()
         assert len(tools) == EXPECTED_TOOL_COUNT
+
+
+READ_ONLY = frozenset(
+    {
+        "list_reports_tool",
+        "get_spec_tool",
+        "get_output_tool",
+        "list_outputs_tool",
+        "get_sweep_tool",
+    }
+)
+WRITES = frozenset(
+    {
+        "upsert_definition_tool",
+        "trigger_report_tool",
+        "save_output_tool",
+        "delete_output_tool",
+        "prune_outputs_tool",
+    }
+)
+
+# The pure function behind each read-only tool, with arguments that succeed
+# against the seeded catalog.
+READ_ONLY_CALLS: dict[str, tuple[Callable[..., Awaitable[object]], list[dict[str, Any]]]] = {
+    "list_reports_tool": (list_reports, [{}]),
+    "get_spec_tool": (get_spec, [{"name": "core-platform-status"}]),
+    "get_output_tool": (
+        get_output,
+        [
+            {"name": "core-platform-status"},
+            {"name": "core-platform-status", "gathered_date": "2026-10-10"},
+        ],
+    ),
+    "list_outputs_tool": (
+        list_outputs,
+        [{}, {"report_name": "core-platform-status", "limit": 5}],
+    ),
+    "get_sweep_tool": (
+        get_sweep,
+        [
+            {"report_name": "core-platform-status"},
+            {"report_name": "core-platform-status", "section": "slack"},
+        ],
+    ),
+}
+
+
+class TestReadOnlyAnnotation:
+    """Every registered tool is classified, and the reads change no row.
+
+    The partition test reads the registry, because the hint is published by the
+    registered tool. The side-effect tests call the pure functions, as the rest
+    of this file does; each ``_tool`` wrapper only validates and delegates.
+    """
+
+    @pytest.fixture
+    async def seeded(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> sqlite3.Connection:
+        """A definition with one swept, completed run gathered on 2026-10-10."""
+        await upsert_definition("core-platform-status", "gather it", schedule="0 6 * * 5")
+        run = db_mod.begin_run("core-platform-status", "manual")
+        db_mod.set_sweep(
+            run["run_id"],
+            {
+                "status": "ready",
+                "generated_at": "2026-10-10T06:00:00+00:00",
+                "window": {"start": "2026-10-03", "end": "2026-10-10"},
+                "errors": [],
+                "sections": {
+                    "slack": {
+                        "collector": "slack",
+                        "status": "ready",
+                        "errors": [],
+                        "stats": {},
+                        "records": [{"title": "one"}],
+                    }
+                },
+            },
+        )
+        await save_output("core-platform-status", [{"summary": "s"}], run_id=run["run_id"])
+        in_memory_db.execute("UPDATE report_outputs SET gathered_at = '2026-10-10 06:00:00'")
+        in_memory_db.commit()
+
+        def _no_http(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("a read-only tool opened an HTTP client")
+
+        monkeypatch.setattr(scheduler.httpx, "AsyncClient", _no_http)
+        return in_memory_db
+
+    @pytest.mark.asyncio
+    async def test_every_tool_is_classified(self) -> None:
+        tools = await mcp.list_tools()
+        assert READ_ONLY.isdisjoint(WRITES)
+        assert {tool.name for tool in tools} == READ_ONLY | WRITES
+        annotated = {
+            tool.name
+            for tool in tools
+            if tool.annotations is not None
+            and tool.annotations.model_dump(by_alias=True).get("readOnlyHint") is True
+        }
+        assert annotated == READ_ONLY
+
+    def test_every_read_only_tool_has_a_call(self) -> None:
+        assert set(READ_ONLY_CALLS) == READ_ONLY
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", sorted(READ_ONLY))
+    async def test_read_only_tool_changes_no_row(
+        self, name: str, seeded: sqlite3.Connection
+    ) -> None:
+        """The backend is SQLite, so a write is a row inserted, updated or deleted.
+
+        ``total_changes`` counts exactly those on the connection the tools use.
+        """
+        before = seeded.total_changes
+        function, calls = READ_ONLY_CALLS[name]
+        for arguments in calls:
+            await function(**arguments)
+        assert seeded.total_changes == before
+        assert not seeded.in_transaction
+
+    @pytest.mark.asyncio
+    async def test_the_probe_sees_a_write(self, seeded: sqlite3.Connection) -> None:
+        """A write tool moves ``total_changes``, so the check above can fail."""
+        before = seeded.total_changes
+        await prune_outputs("core-platform-status", keep_last=0)
+        assert seeded.total_changes > before
 
 
 class TestDefinitionTools:
