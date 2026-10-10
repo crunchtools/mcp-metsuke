@@ -8,6 +8,20 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-10
+
+### Added
+- The five tools that only read (`list_reports`, `get_spec`, `get_output`,
+  `list_outputs`, `get_sweep`) publish `readOnlyHint: true`. A gateway uses it
+  to decide whether an invalid optional argument may be dropped or must refuse
+  the call (crunchtools/constitution#35).
+- Tests pin every registered tool into `READ_ONLY` or `WRITES`, and check that
+  no read-only tool inserts, updates or deletes a row or opens an HTTP client.
+
+### Changed
+- Inherits constitution v1.22.0; the workflow pins and the pre-commit hook rev
+  (which sat on v1.6.0) move with it.
+
 ## [3.1.0] - 2026-10-03
 
 ### Changed

@@ -33,6 +33,10 @@ from .tools import (
     upsert_definition,
 )
 
+# A gateway drops an invalid optional argument only on a tool annotated read-only;
+# on anything else it refuses the call. Only tools that change nothing get this.
+READ_ONLY = {"readOnlyHint": True}
+
 mcp = FastMCP(
     "mcp-metsuke-crunchtools",
     version=__version__,
@@ -58,7 +62,7 @@ mcp = FastMCP(
 # --- Definition Tools ---
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_reports_tool() -> list[dict[str, Any]]:
     """List all report definitions in the catalog.
 
@@ -68,7 +72,7 @@ async def list_reports_tool() -> list[dict[str, Any]]:
     return await list_reports()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def get_spec_tool(name: str) -> dict[str, Any]:
     """Return the gather spec (prompt + source config) for a report definition.
 
@@ -191,7 +195,7 @@ async def save_output_tool(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def get_output_tool(
     name: str,
     gathered_date: str | None = None,
@@ -209,7 +213,7 @@ async def get_output_tool(
     return await get_output(params.name, params.gathered_date)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def list_outputs_tool(
     report_name: str | None = None,
     limit: int = 50,
@@ -268,7 +272,7 @@ async def prune_outputs_tool(
     return await prune_outputs(params.report_name, params.keep_last, params.before_date)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 async def get_sweep_tool(
     run_id: str | None = None,
     report_name: str | None = None,
