@@ -8,6 +8,17 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-10-17
+
+### Added
+- Pull owners. A report whose `owner_agent` is in `METSUKE_PULL_OWNERS`
+  (comma-separated) gets no callback. The scheduler and `trigger_report` open
+  the run and sweep it if it has a sweep, then leave it `gathering` for the
+  owner to find and complete with `save_output`. This is for a gatherer with
+  no inbound listener, such as Josui Prime. `trigger_report` returns
+  `dispatched: "pull"`, and a pull owner's report needs no alert URL or token.
+- The scheduler also runs when only pull owners are configured.
+
 ## [3.2.0] - 2026-10-10
 
 ### Added

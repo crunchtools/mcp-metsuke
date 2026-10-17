@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -322,6 +323,123 @@ class TestTriggerReport:
         assert body["run_id"] == result["run_id"]
         assert body["gather_prompt"] == "gather it"
         assert json.loads(cast("str", body["source_config"])) == {"window_days": 7}
+
+
+class TestPullOwners:
+    @pytest.mark.asyncio
+    async def test_trigger_pull_owner_needs_no_callback(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TRENTINA_ALERT_URL", raising=False)
+        monkeypatch.delenv("METSUKE_ALERT_TOKEN", raising=False)
+        monkeypatch.setenv("METSUKE_PULL_OWNERS", "josui, other")
+        config_mod._config = None
+        _FakeClient.posted.clear()
+        monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient())
+        await upsert_definition("daily", "gather it", owner_agent="josui")
+        result = await trigger_report("daily")
+        assert result["dispatched"] == "pull"
+        assert result["sweep"] is False
+        assert _FakeClient.posted == []
+        rows = await list_outputs("daily")
+        assert rows[0]["status"] == "gathering"
+        assert rows[0]["run_id"] == result["run_id"]
+
+    @pytest.mark.asyncio
+    async def test_push_owner_still_dispatches(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
+        monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
+        monkeypatch.setenv("METSUKE_PULL_OWNERS", "josui")
+        config_mod._config = None
+        monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient())
+        await upsert_definition("weekend", "gather it")
+        result = await trigger_report("weekend")
+        assert result["dispatched"] is True
+
+    @pytest.mark.asyncio
+    async def test_scheduled_tick_leaves_pull_run_open(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
+        monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
+        monkeypatch.setenv("METSUKE_PULL_OWNERS", "josui")
+        config_mod._config = None
+        monkeypatch.setattr(scheduler, "_is_due", lambda *_a: True)
+        db_mod.upsert_definition("r", "the prompt", "josui", "0 9 * * 6", "UTC", None)
+        _FakeClient.posted.clear()
+        await scheduler._tick(
+            in_memory_db,
+            config_mod.get_config(),
+            cast("httpx.AsyncClient", _FakeClient()),
+            datetime.now(UTC),
+        )
+        assert _FakeClient.posted == []
+        (row,) = db_mod.list_scheduled(in_memory_db)
+        assert row["last_fired_at"] is not None
+        rows = await list_outputs("r")
+        assert rows[0]["status"] == "gathering"
+
+    @pytest.mark.asyncio
+    async def test_sweep_then_no_dispatch_for_pull(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("METSUKE_PULL_OWNERS", "josui")
+        config_mod._config = None
+
+        async def fake_sweep(*_a: Any, **_k: Any) -> str:
+            return "ready"
+
+        async def no_trigger(*_a: Any, **_k: Any) -> int:
+            raise AssertionError("pull owner must not be dispatched")
+
+        monkeypatch.setattr(scheduler, "sweep_run", fake_sweep)
+        monkeypatch.setattr(scheduler, "trigger_now", no_trigger)
+        definition = {
+            "name": "r",
+            "owner_agent": "josui",
+            "gather_prompt": "p",
+            "source_config": {"sweep": {}},
+        }
+        db_mod.upsert_definition("r", "p", "josui", None, "UTC", {"sweep": {}})
+        run = db_mod.begin_run("r", "manual")
+        await scheduler.sweep_and_dispatch("r", run["run_id"], definition)
+        assert db_mod.run_is_open(run["run_id"])
+
+    @pytest.mark.asyncio
+    async def test_trigger_pull_owner_with_sweep(
+        self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TRENTINA_ALERT_URL", raising=False)
+        monkeypatch.delenv("METSUKE_ALERT_TOKEN", raising=False)
+        monkeypatch.setenv("METSUKE_PULL_OWNERS", "josui")
+        config_mod._config = None
+
+        async def fake_sweep(*_a: Any, **_k: Any) -> str:
+            return "ready"
+
+        async def no_trigger(*_a: Any, **_k: Any) -> int:
+            raise AssertionError("pull owner must not be dispatched")
+
+        monkeypatch.setattr(scheduler, "sweep_run", fake_sweep)
+        monkeypatch.setattr(scheduler, "trigger_now", no_trigger)
+        await upsert_definition(
+            "daily", "gather it", owner_agent="josui", source_config={"sweep": {}}
+        )
+        result = await trigger_report("daily")
+        assert result["dispatched"] == "pull"
+        assert result["sweep"] is True
+        await asyncio.gather(*scheduler._background)
+        assert db_mod.run_is_open(result["run_id"])
+
+    def test_scheduler_runs_for_pull_owners_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TRENTINA_ALERT_URL", raising=False)
+        monkeypatch.delenv("METSUKE_ALERT_TOKEN", raising=False)
+        monkeypatch.delenv("METSUKE_SCHEDULER_ENABLED", raising=False)
+        monkeypatch.setenv("METSUKE_PULL_OWNERS", "josui")
+        config_mod._config = None
+        assert config_mod.get_config().scheduler_enabled is True
 
 
 class TestOutputTools:

@@ -1,8 +1,8 @@
 # mcp-metsuke-crunchtools Constitution
 
-> **Version:** 1.1.0
+> **Version:** 1.2.0
 > **Ratified:** 2026-08-29
-> **Amended:** 2026-10-02
+> **Amended:** 2026-10-17
 > **Status:** Active
 > **Inherits:** [crunchtools/constitution](https://github.com/crunchtools/constitution) v1.24.0
 > **Profile:** MCP Server
@@ -55,7 +55,11 @@ compiler reads the freshest output to draft a cited report.
 - The built-in scheduler fires due definitions by POSTing to the Trentina
   alert endpoint. It runs only under the `sse` and `streamable-http`
   transports, never `stdio`, and is on by default only when the callback
-  URL and token are set (`METSUKE_SCHEDULER_ENABLED` overrides).
+  URL and token are set or pull owners are configured
+  (`METSUKE_SCHEDULER_ENABLED` overrides).
+- A definition whose `owner_agent` is in `METSUKE_PULL_OWNERS` is a pull
+  owner's: its fire opens the run (and runs its sweep) but sends no callback.
+  The owner finds the open run and completes it with `save_output(run_id)`.
 - Every fire records a provisional run row before the callback, so a fire is
   never lost.
 - A definition can opt into a sweep: Metsuke runs each collector step through
@@ -95,3 +99,4 @@ The release version is kept in sync in four places: `pyproject.toml`,
 | 1.0.0 | 2026-08-29 | Initial constitution (inherits universal v1.10.0, MCP Server profile) |
 | 1.0.1 | 2026-09-25 | Inherit constitution v1.17.0 (Gatehouse gates) |
 | 1.1.0 | 2026-10-02 | Manifest under constitution v1.18.0: profile restatement removed; credentials, scheduler and sweep rules updated to match the code |
+| 1.2.0 | 2026-10-17 | Pull owners: scheduled runs left open for owners with no inbound listener |

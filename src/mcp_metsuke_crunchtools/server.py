@@ -135,7 +135,8 @@ async def trigger_report_tool(name: str) -> dict[str, Any]:
     Dispatches the same callback the scheduler uses: Metsuke POSTs the trigger
     to the Trentina alert endpoint, which forwards it to the owning gatherer.
     Requires the callback to be configured (TRENTINA_ALERT_URL +
-    METSUKE_ALERT_TOKEN).
+    METSUKE_ALERT_TOKEN), unless the owner is a pull owner
+    (METSUKE_PULL_OWNERS): then the run is opened and left for the owner.
 
     Args:
         name: The report definition name to fire (e.g. "core-platform-status")
