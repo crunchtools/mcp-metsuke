@@ -62,6 +62,13 @@ class Config:
         except ValueError:
             self.sweep_timeout_seconds = DEFAULT_SWEEP_TIMEOUT_SECONDS
 
+        # Owners that collect their own runs. Their reports are opened (and
+        # swept) on schedule, but no callback is POSTed: the owner finds the open
+        # run itself. For a gatherer with no inbound listener, such as Josui.
+        self.pull_owners: frozenset[str] = frozenset(
+            o.strip() for o in _read_env("METSUKE_PULL_OWNERS", "").split(",") if o.strip()
+        )
+
         self._scheduler_enabled_override: bool | None = _read_bool("METSUKE_SCHEDULER_ENABLED")
 
     @property
@@ -79,12 +86,12 @@ class Config:
         """Whether the background scheduler should run.
 
         Explicit ``METSUKE_SCHEDULER_ENABLED`` wins; otherwise the scheduler
-        runs only when a callback is actually configured (so stdio/dev sessions
-        and tests stay passive).
+        runs only when a callback or a pull owner is configured (so stdio/dev
+        sessions and tests stay passive).
         """
         if self._scheduler_enabled_override is not None:
             return self._scheduler_enabled_override
-        return self.callback_configured
+        return self.callback_configured or bool(self.pull_owners)
 
     def ensure_db_dir(self) -> None:
         """Create the database directory if it does not exist."""

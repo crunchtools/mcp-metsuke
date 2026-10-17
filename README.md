@@ -79,6 +79,7 @@ claude mcp add mcp-metsuke-crunchtools -- uvx mcp-metsuke-crunchtools
 | `TRENTINA_ALERT_URL` | (none) | Base URL of the Trentina gateway; the scheduler POSTs gather callbacks to `<url>/alert` with the token as `Authorization: Bearer` |
 | `METSUKE_ALERT_TOKEN` | (none) | Alert token identifying the reports profile; enables the scheduler when set with `TRENTINA_ALERT_URL` |
 | `METSUKE_ALERT_TOKEN_FILE` | (none) | Path whose contents override `METSUKE_ALERT_TOKEN` (container secret-file convention) |
+| `METSUKE_PULL_OWNERS` | (none) | Comma-separated owners that collect their own runs: their reports are opened and swept on schedule but get no callback. Also enables the scheduler |
 | `TRENTINA_GATEWAY_URL` | (none) | Trentina gateway MCP endpoint for the sweep profile, e.g. `http://mcp-trentina:8019/gateway/metsuke-sweep/mcp`. Plain HTTP is accepted only for internal hosts (single-label service names, localhost, private IPs); anything else must be HTTPS |
 | `METSUKE_SWEEP_TOKEN` | (none) | Bearer token for that profile; `METSUKE_SWEEP_TOKEN_FILE` overrides it |
 | `METSUKE_SWEEP_TIMEOUT_SECONDS` | `1200` | Upper bound on one run's sweep |

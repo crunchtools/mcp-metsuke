@@ -13,6 +13,10 @@ its fixed collector steps through the Trentina gateway, stores the result on the
 run, and only then dispatches the callback (carrying ``sweep_status``). The
 gatherer then reads pre-shaped records with get_sweep instead of calling the
 sources itself.
+
+A definition whose owner is in ``METSUKE_PULL_OWNERS`` gets no callback. Its run
+is opened (and swept) on schedule and left ``gathering``; the owner finds it and
+completes it with save_output, as a pushed gatherer would.
 """
 
 from __future__ import annotations
@@ -210,6 +214,9 @@ async def sweep_and_dispatch(
                 logger.warning("run %s expired while queued for a sweep; dropped", run_id)
                 return
             status = await sweep_run(run_id, definition.get("source_config"), conn=conn)
+        if is_pull(definition):
+            logger.info("run %s swept (%s); left for owner to pull", run_id, status)
+            return
         if not db.run_is_open(run_id, conn=conn):
             # The lock TTL lapsed mid-sweep, so a newer run may own the report:
             # dispatching now could produce a duplicate callback.
@@ -269,6 +276,11 @@ async def trigger_now(
         return await _post_alert(client, cfg, name, run_id, spec, sweep_status)
 
 
+def is_pull(row: dict[str, Any], cfg: Config | None = None) -> bool:
+    """Whether the definition's owner collects its own runs (no callback)."""
+    return row.get("owner_agent") in (cfg or get_config()).pull_owners
+
+
 def _has_sweep(row: dict[str, Any]) -> bool:
     return "sweep" in (row.get("source_config") or {})
 
@@ -320,6 +332,10 @@ async def _tick(
             # the background so later due reports are not held up.
             db.set_last_fired(conn, name, datetime.now(UTC).isoformat())
             logger.info("fired scheduled report '%s' (run %s) -> sweeping", name, run_id)
+            continue
+        if is_pull(row, cfg):
+            db.set_last_fired(conn, name, datetime.now(UTC).isoformat())
+            logger.info("fired scheduled report '%s' (run %s) -> left for owner", name, run_id)
             continue
         try:
             code = await _post_alert(client, cfg, name, run_id, gather_spec_of(row))
