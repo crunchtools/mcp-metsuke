@@ -12,7 +12,7 @@
 #     --transport streamable-http --host 0.0.0.0 --port 8009
 
 # Stage 1: Build into a venv (Hummingbird FIPS builder — same family as runtime)
-FROM quay.io/hummingbird/python:latest-fips-builder AS builder
+FROM quay.io/hummingbird/python:3.14-fips-builder AS builder
 
 USER 0
 WORKDIR /app
@@ -24,7 +24,7 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir .
 
 # Stage 2: Distroless FIPS runtime (no shell, no dnf)
-FROM quay.io/hummingbird/python:latest-fips
+FROM quay.io/hummingbird/python:3.14-fips
 
 LABEL name="mcp-metsuke-crunchtools" \
       version="3.3.0" \
