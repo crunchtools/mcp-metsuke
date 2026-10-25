@@ -24,11 +24,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator
 
-from . import parsers
+from . import ops_parsers, parsers
 from .client import GatewayResult
 from .window import SATURDAY, Window, next_weekday
 
@@ -102,6 +103,18 @@ MAX_FEED_LIMIT = 100
 MAX_FEED_RECORDS = 300
 MAX_SINCE_DAYS = 30
 DEFAULT_SINCE_AFTER_WEEKEND = 3
+
+# Nagios: a week of history, Nagios keeps a month.
+DEFAULT_NAGIOS_HOURS = 168
+MAX_NAGIOS_HOURS = 744
+MAX_NAGIOS_OUTPUT = 300
+
+# Ashigaru record issues
+MAX_ASHIGARU_RECORDS = 100
+MAX_LABEL_LENGTH = 50
+# Ashigaru keeps one record issue per label; a few more covers duplicates it closes.
+RECORD_ISSUE_PAGE = 10
+PUBLISHED_PART = "Published in the last seven days"
 
 
 def _section(collector: str) -> dict[str, Any]:
@@ -947,8 +960,367 @@ async def jira_issues(
     return _finish(section)
 
 
+# --- Nagios --------------------------------------------------------------
+
+
+class NagiosOptions(BaseModel, extra="forbid"):
+    """Options for the nagios_health collector."""
+
+    backend: str = Field(default="nagios", min_length=1, max_length=MAX_BACKEND_NAME)
+    hours: int = Field(default=DEFAULT_NAGIOS_HOURS, ge=1, le=MAX_NAGIOS_HOURS)
+    min_events: int = Field(default=5, ge=1, le=1000)
+    base_url: str = Field(default="https://nagios.crunchtools.com/cgi-bin/", max_length=200)
+    timezone: str = Field(default="America/New_York", min_length=1, max_length=MAX_TZ_LENGTH)
+
+    _check_timezone = field_validator("timezone")(valid_zone)
+
+
+def _local(stamp: str | None, zone: ZoneInfo) -> str | None:
+    """A ``…Z`` timestamp as reader time, "Oct 24 7:12 PM"; None passes through."""
+    if not stamp:
+        return None
+    moment = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone(zone)
+    return f"{moment:%b} {moment.day} {moment:%-I:%M %p}"
+
+
+def _nagios_links(base: str, host: str, service: str | None) -> tuple[str, str]:
+    h = quote(host, safe="")
+    if service is None:
+        return f"{base}extinfo.cgi?type=1&host={h}", f"{base}history.cgi?host={h}"
+    s = quote(service, safe="")
+    return (
+        f"{base}extinfo.cgi?type=2&host={h}&service={s}",
+        f"{base}history.cgi?host={h}&service={s}",
+    )
+
+
+async def _nagios_text(
+    gw: Gateway, section: dict[str, Any], backend: str, tool: str, args: dict[str, Any]
+) -> GatewayResult | None:
+    res = await gw.call(backend, tool, args)
+    if not res.ok:
+        _note_error(section, tool, res)
+        return None
+    _count_ok(section)
+    return res
+
+
+async def nagios_health(
+    gw: Gateway, _window: Window, _now: datetime, options: dict[str, Any]
+) -> dict[str, Any]:
+    """What is broken now and what kept breaking, one record per qualifying check.
+
+    A check qualifies when it is not OK now, had ``min_events`` or more problem
+    events in ``hours``, or paged. Only hard CRITICAL and DOWN page Hermes, and
+    the roll-up does not split its hard count by state, so the notification
+    history is what says a check went hard CRITICAL. The roll-up lists its
+    noisiest rows and counts the rest. Records come sorted open
+    first, then noisiest, and carry their status and history links already
+    URL-encoded and their times in ``timezone``. Plugin output is withheld
+    from any result Trentina flagged; counts, states and times are kept.
+    """
+    opts = NagiosOptions(**options)
+    zone = ZoneInfo(opts.timezone)
+    section = _section("nagios_health")
+    checks: dict[tuple[str, str | None], dict[str, Any]] = {}
+
+    def check(host: str, service: str | None) -> dict[str, Any]:
+        key = (host, service)
+        if key not in checks:
+            status_url, history_url = _nagios_links(opts.base_url, host, service)
+            checks[key] = {
+                "host": host,
+                "service": service,
+                "open_now": False,
+                "pages": 0,
+                "events": 0,
+                "status_url": status_url,
+                "history_url": history_url,
+            }
+        return checks[key]
+
+    if res := await _nagios_text(gw, section, opts.backend, "nagios_current_problems_tool", {}):
+        for row in ops_parsers.nagios_current_problems(res.text):
+            record = check(row["host"], row["service"])
+            record.update(
+                open_now=True,
+                state_now=row["state"],
+                since=_local(row["since"], zone),
+                duration=row["duration"],
+                hard_now=row["hard"],
+                acknowledged=row["acknowledged"],
+                output_now=None if res.flagged else row["output"][:MAX_NAGIOS_OUTPUT],
+            )
+    args = {"hours": opts.hours}
+    if res := await _nagios_text(
+        gw, section, opts.backend, "nagios_notification_history_tool", args
+    ):
+        pages = ops_parsers.nagios_notifications(res.text)
+        section["stats"]["pages"] = len(pages)
+        for row in pages:
+            record = check(row["host"], row["service"])
+            record["pages"] += 1
+            record["last_page"] = _local(row["at"], zone)
+    if res := await _nagios_text(gw, section, opts.backend, "nagios_alert_history_tool", args):
+        rows = ops_parsers.nagios_alert_rollup(res.text)
+        total, more = ops_parsers.nagios_rollup_extent(res.text)
+        section["stats"].update(
+            checks_with_problems=total, rollup_listed=len(rows), rollup_more=more
+        )
+        for row in rows:
+            key = (row["host"], row["service"])
+            if key not in checks and row["events"] < opts.min_events:
+                continue
+            check(*key).update(
+                events=row["events"],
+                counts=row["counts"],
+                hard_events=row["hard"],
+                first=_local(row["first"], zone),
+                last=_local(row["last"], zone),
+                last_state=row["last_state"],
+                last_output=None if res.flagged else row["output"][:MAX_NAGIOS_OUTPUT],
+            )
+    section["records"] = sorted(
+        checks.values(),
+        key=lambda r: (not r["open_now"], -r["events"], -r["pages"], r["host"], r["service"] or ""),
+    )
+    section["stats"]["qualifying"] = len(section["records"])
+    return _finish(section)
+
+
+# --- Ashigaru record issues ----------------------------------------------
+
+
+class AshigaruOptions(BaseModel, extra="forbid"):
+    """Options for the ashigaru_issue collector."""
+
+    backend: str = Field(default="github", min_length=1, max_length=MAX_BACKEND_NAME)
+    owner: str = Field(default="crunchtools", min_length=1, max_length=100)
+    repo: str = Field(default="ashigaru", min_length=1, max_length=100)
+    label: str = Field(..., min_length=1, max_length=MAX_LABEL_LENGTH, pattern=r"^[a-z0-9-]+$")
+
+
+async def _record_issue(
+    gw: Gateway, section: dict[str, Any], opts: AshigaruOptions
+) -> tuple[dict[str, Any], bool] | None:
+    """The oldest open issue carrying the label (Ashigaru edits that one), and its flag."""
+    res = await gw.call(
+        opts.backend,
+        "list_issues_tool",
+        {
+            "owner": opts.owner,
+            "repo": opts.repo,
+            "labels": opts.label,
+            "state": "open",
+            "per_page": RECORD_ISSUE_PAGE,
+        },
+    )
+    if not res.ok:
+        _note_error(section, f"label {opts.label}", res)
+        return None
+    _count_ok(section)
+    try:
+        payload = res.json()
+    except ValueError:
+        _note_error(section, f"label {opts.label}", _bad_json(res))
+        return None
+    items = payload.get("items", []) if isinstance(payload, dict) else payload
+    issues = sorted(
+        (i for i in items or [] if isinstance(i, dict) and isinstance(i.get("number"), int)),
+        key=lambda i: i["number"],
+    )
+    if not issues:
+        _note_error(section, f"label {opts.label}", GatewayResult(text="", error="no open issue"))
+        return None
+    section["stats"].update(
+        issue_number=issues[0]["number"],
+        issue_url=issues[0].get("html_url"),
+        issue_updated=issues[0].get("updated_at"),
+    )
+    return issues[0], res.flagged
+
+
+def _capped_parts(parts: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Each part's items capped at ``MAX_ASHIGARU_RECORDS``, and its stats written to match:
+    ``listed`` is what is emitted, ``more`` adds what the cap dropped to the issue's own tail."""
+    for part in parts.values():
+        dropped = max(0, len(part["items"]) - MAX_ASHIGARU_RECORDS)
+        part["items"] = part["items"][:MAX_ASHIGARU_RECORDS]
+        part["more"] += dropped
+    return {
+        name: {"count": part["count"], "listed": len(part["items"]), "more": part["more"]}
+        for name, part in parts.items()
+    }
+
+
+async def ashigaru_issue(
+    gw: Gateway, _window: Window, _now: datetime, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Every item of an Ashigaru record issue (inbox or releases), one record each.
+
+    The issue is found by label, not number, so a renumbered record is still
+    read. Each record names its ``part`` heading; ``stats.parts`` gives every
+    part's own total and how many it lists, so "and 17 more" reads as a cap,
+    not a gap. Titles are written by contributors, so a flagged result keeps
+    every field but ``title``.
+    """
+    opts = AshigaruOptions(**options)
+    section = _section("ashigaru_issue")
+    found = await _record_issue(gw, section, opts)
+    if found is None:
+        return _finish(section)
+    issue, flagged = found
+    section["stats"]["flagged"] = flagged
+    parts = ops_parsers.ashigaru_parts(issue.get("body") or "")
+    section["stats"]["parts"] = _capped_parts(parts)
+    for name, part in parts.items():
+        for item in part["items"]:
+            section["records"].append(
+                {"part": name, **item, "title": None if flagged else item["title"]}
+            )
+    return _finish(section)
+
+
+class ReleasesOptions(AshigaruOptions, extra="forbid"):
+    """Options for the crunchtools_releases collector."""
+
+    label: str = Field(
+        default="ashigaru-releases",
+        min_length=1,
+        max_length=MAX_LABEL_LENGTH,
+        pattern=r"^[a-z0-9-]+$",
+    )
+    podman_backend: str = Field(default="podman", min_length=1, max_length=MAX_BACKEND_NAME)
+
+
+def _running_versions(payload: Any) -> dict[str, set[str]]:
+    """Repo name to the versions its running containers report.
+
+    A container belongs to a repository when its OCI source label ends in the
+    repo name, or failing that when its image name is the repo name.
+    """
+    items = payload.get("items", []) if isinstance(payload, dict) else payload
+    running: dict[str, set[str]] = {}
+    for ctr in items or []:
+        if not isinstance(ctr, dict) or ctr.get("State") not in (None, "running"):
+            continue
+        labels = ctr.get("Labels") or {}
+        source = str(labels.get("org.opencontainers.image.source") or "").rstrip("/")
+        image = str(ctr.get("Image") or "").rsplit("/", 1)[-1].split(":", 1)[0]
+        repo = source.rsplit("/", 1)[-1] if source else image
+        version = labels.get("org.opencontainers.image.version") or labels.get("version")
+        if repo and ops_parsers.semver(str(version or "")):
+            running.setdefault(repo, set()).add(str(version).lstrip("v"))
+    return running
+
+
+def _deploy_status(newest: str, running: set[str]) -> str:
+    """live, behind, or not-deployed. Running a version newer than the newest
+    release (release mode off) counts as live."""
+    if not running:
+        return "not-deployed"
+    best = max(running, key=lambda v: ops_parsers.semver(v) or (0, 0, 0, 0))
+    return (
+        "behind"
+        if (ops_parsers.semver(best) or (0, 0, 0, 0)) < (ops_parsers.semver(newest) or (0, 0, 0, 0))
+        else "live"
+    )
+
+
+async def _lotor_versions(
+    gw: Gateway, section: dict[str, Any], backend: str
+) -> dict[str, set[str]] | None:
+    """What lotor runs, by repo; None when the container list could not be read."""
+    res = await gw.call(backend, "container_list_tool", {})
+    if not res.ok:
+        _note_error(section, "container_list_tool", res)
+        return None
+    _count_ok(section)
+    try:
+        return _running_versions(res.json())
+    except ValueError:
+        _note_error(section, "container_list_tool", _bad_json(res))
+        return None
+
+
+def _repo_records(
+    published: list[dict[str, Any]], running: dict[str, set[str]] | None
+) -> list[dict[str, Any]]:
+    """One record per repository released, newest version first-class."""
+    by_repo: dict[str, list[dict[str, Any]]] = {}
+    for item in published:
+        if item.get("version"):
+            by_repo.setdefault(item["repo"], []).append(item)
+    records = []
+    for repo, releases in by_repo.items():
+        newest = max(releases, key=lambda r: ops_parsers.semver(r["version"]) or (0, 0, 0, 0))
+        record: dict[str, Any] = {
+            "part": PUBLISHED_PART,
+            "kind": "repo",
+            "repo": repo,
+            "newest": newest["version"],
+            "url": newest["url"],
+            "published": newest.get("published"),
+            "releases": len(releases),
+        }
+        if running is not None:
+            versions = running.get(repo, set())
+            record["running"] = sorted(
+                versions, key=lambda v: ops_parsers.semver(v) or (0, 0, 0, 0)
+            )
+            record["status"] = _deploy_status(newest["version"], versions)
+        records.append(record)
+    return records
+
+
+async def crunchtools_releases(
+    gw: Gateway, _window: Window, _now: datetime, options: dict[str, Any]
+) -> dict[str, Any]:
+    """The releases issue joined with what lotor runs, compared in code.
+
+    One ``repo`` record per repository released this week (newest version,
+    its link and date, how many releases, the versions running, and
+    ``live``/``behind``/``not-deployed``), then one record per other item of
+    the issue (release pull requests, merged-not-released, refused). If the
+    container list fails, the repo records carry no deploy status.
+    """
+    opts = ReleasesOptions(**options)
+    section = _section("crunchtools_releases")
+    found = await _record_issue(gw, section, opts)
+    if found is None:
+        return _finish(section)
+    issue, flagged = found
+    section["stats"]["flagged"] = flagged
+    parts = ops_parsers.ashigaru_parts(issue.get("body") or "")
+    section["stats"]["parts"] = _capped_parts(parts)
+    running = await _lotor_versions(gw, section, opts.podman_backend)
+    repos = _repo_records(parts.get(PUBLISHED_PART, {}).get("items", []), running)
+    section["records"] = repos + [
+        {"part": name, "kind": "item", **item, "title": None if flagged else item["title"]}
+        for name, part in parts.items()
+        if name != PUBLISHED_PART
+        for item in part["items"]
+    ]
+    section["stats"]["repos_released"] = len(repos)
+    if running is not None:
+        statuses = [r["status"] for r in repos]
+        section["stats"].update(
+            live=statuses.count("live"),
+            behind=statuses.count("behind"),
+            not_deployed=statuses.count("not-deployed"),
+        )
+    return _finish(section)
+
+
 CollectorName = Literal[
-    "slack_waiting", "gmail_waiting", "calendar_day", "feed_entries", "jira_issues"
+    "slack_waiting",
+    "gmail_waiting",
+    "calendar_day",
+    "feed_entries",
+    "jira_issues",
+    "nagios_health",
+    "ashigaru_issue",
+    "crunchtools_releases",
 ]
 
 Collector = Callable[["Gateway", Window, datetime, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -959,6 +1331,9 @@ COLLECTORS: dict[str, Collector] = {
     "calendar_day": calendar_day,
     "feed_entries": feed_entries,
     "jira_issues": jira_issues,
+    "nagios_health": nagios_health,
+    "ashigaru_issue": ashigaru_issue,
+    "crunchtools_releases": crunchtools_releases,
 }
 
 OPTION_MODELS: dict[str, type[BaseModel]] = {
@@ -967,4 +1342,7 @@ OPTION_MODELS: dict[str, type[BaseModel]] = {
     "calendar_day": CalendarOptions,
     "feed_entries": FeedOptions,
     "jira_issues": JiraOptions,
+    "nagios_health": NagiosOptions,
+    "ashigaru_issue": AshigaruOptions,
+    "crunchtools_releases": ReleasesOptions,
 }

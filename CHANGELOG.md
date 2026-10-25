@@ -8,6 +8,19 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+### Added
+
+- Three sweep collectors for the weekend report, so its infrastructure,
+  inbox and release sections arrive as complete records instead of being
+  read by the gathering model through a judge that refuses them:
+  `nagios_health` (current problems, the week's roll-up and what paged, one
+  record per qualifying check with its status and history links encoded and
+  times local), `ashigaru_issue` (an Ashigaru record issue found by label,
+  every part parsed into items) and `crunchtools_releases` (the releases
+  issue joined with what lotor runs, live/behind/not-deployed decided in
+  code). A flagged result keeps its structure and withholds plugin output
+  or contributor-written titles, as the other collectors do.
+
 ### Changed
 
 - Container base images pinned to `quay.io/hummingbird/python:3.14*` instead of
