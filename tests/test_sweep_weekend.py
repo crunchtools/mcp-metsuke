@@ -103,7 +103,14 @@ def _ctr(name: str, source: str, version: str) -> dict[str, Any]:
 CONTAINERS = {
     "items": [
         _ctr("mcp-workboard", "https://github.com/crunchtools/mcp-workboard", "0.11.2"),
-        _ctr("mcp-github", "https://github.com/crunchtools/mcp-github", "1.6.0"),
+        {
+            **_ctr("mcp-github", "https://github.com/crunchtools/mcp-github", "main"),
+            "Labels": {
+                "org.opencontainers.image.source": "https://github.com/crunchtools/mcp-github",
+                "org.opencontainers.image.version": "main",
+                "version": "1.6.0",
+            },
+        },
         _ctr("trentina", "https://github.com/crunchtools/trentina", "1.23.0"),
     ]
 }

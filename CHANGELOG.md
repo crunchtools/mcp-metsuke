@@ -20,6 +20,10 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
   issue joined with what lotor runs, live/behind/not-deployed decided in
   code). A flagged result keeps its structure and withholds plugin output
   or contributor-written titles, as the other collectors do.
+- `crunchtools_releases` reads a container's version from the first of
+  `org.opencontainers.image.version` and `version` that is a version: images
+  built from a branch carry "main" in the OCI label, which had made 13
+  deployed MCP servers read as not deployed.
 
 ### Changed
 
