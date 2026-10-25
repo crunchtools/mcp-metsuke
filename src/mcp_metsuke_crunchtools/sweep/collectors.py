@@ -115,6 +115,7 @@ MAX_LABEL_LENGTH = 50
 # Ashigaru keeps one record issue per label; a few more covers duplicates it closes.
 RECORD_ISSUE_PAGE = 10
 PUBLISHED_PART = "Published in the last seven days"
+VERSION_LABELS = ("org.opencontainers.image.version", "version")
 
 
 def _section(collector: str) -> dict[str, Any]:
@@ -1208,9 +1209,18 @@ def _running_versions(payload: Any) -> dict[str, set[str]]:
         source = str(labels.get("org.opencontainers.image.source") or "").rstrip("/")
         image = str(ctr.get("Image") or "").rsplit("/", 1)[-1].split(":", 1)[0]
         repo = source.rsplit("/", 1)[-1] if source else image
-        version = labels.get("org.opencontainers.image.version") or labels.get("version")
-        if repo and ops_parsers.semver(str(version or "")):
-            running.setdefault(repo, set()).add(str(version).lstrip("v"))
+        # The OCI label reads "main" on images built from a branch; the
+        # project's own "version" label carries the release then.
+        version = next(
+            (
+                str(v)
+                for v in (labels.get(k) for k in VERSION_LABELS)
+                if ops_parsers.semver(str(v or ""))
+            ),
+            None,
+        )
+        if repo and version:
+            running.setdefault(repo, set()).add(version.lstrip("v"))
     return running
 
 
