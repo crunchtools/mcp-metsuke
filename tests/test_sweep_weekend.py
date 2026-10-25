@@ -171,6 +171,13 @@ class TestAshigaruPartsCap:
         assert sum(len(p["items"]) for p in parts.values()) == ops_parsers.MAX_ASHIGARU_ITEMS
 
 
+class TestSemver:
+    def test_a_prerelease_sorts_below_its_final_release(self) -> None:
+        assert ops_parsers.semver("1.2.3-rc1") < ops_parsers.semver("v1.2.3")
+        assert ops_parsers.semver("1.2.3") < ops_parsers.semver("1.2.4-rc1")
+        assert ops_parsers.semver("latest") is None
+
+
 class TestNagiosHealth:
     STEP: ClassVar[dict[str, Any]] = {"section": "infra", "collector": "nagios_health"}
 
@@ -190,8 +197,8 @@ class TestNagiosHealth:
             ("lotor.dc3.crunchtools.com", "Host memory usage"),
             ("lotor.dc3.crunchtools.com", "Host failed systemd units"),
         ]
-        # Hard CRITICAL with few events qualifies; a quiet warning does not; a page does.
-        assert ("ctr-crunchtools.com", "HTTPS") in names
+        # A few events do not qualify, even with a hard one; a page does.
+        assert ("ctr-crunchtools.com", "HTTPS") not in names
         assert ("ctr-educatedconfusion.com", "HTTPS") not in names
         assert ("ctr-openclaw.crunchtools.com", None) in names
         drift = next(r for r in section["records"] if r["service"] == "Git Drift /srv")
@@ -240,6 +247,15 @@ class TestAshigaruIssue:
         red = section["records"][-1]
         assert red["title"] == "fleet-drift.yml"
         assert red["conclusion"] == "failure"
+
+    def test_the_record_cap_is_reflected_in_part_stats(self) -> None:
+        line = "- [r#1](https://github.com/crunchtools/r/issues/1) `t`, opened 2026-10-01."
+        body = "## Fixed by Ashigaru, past 7 days (130)\n" + "\n".join([line] * 130)
+        gw = Gateway({"list_issues_tool": GatewayResult(text=_issues(body))})
+        section = _sweep(self.STEP, gw)
+        stats = section["stats"]["parts"]["Fixed by Ashigaru, past 7 days"]
+        assert stats == {"count": 130, "listed": 100, "more": 30}
+        assert len(section["records"]) == 100
 
     def test_flagged_issue_withholds_titles_only(self) -> None:
         gw = Gateway({"list_issues_tool": GatewayResult(text=_issues(INBOX), flagged=True)})

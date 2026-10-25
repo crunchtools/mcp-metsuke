@@ -183,7 +183,8 @@ def ashigaru_parts(body: str) -> dict[str, dict[str, Any]]:
     return parts
 
 
-def semver(value: str | None) -> tuple[int, int, int] | None:
-    """``"v1.2.3"`` or ``"1.2.3-rc1"`` as ``(1, 2, 3)``; None when it is not one."""
-    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", (value or "").strip())
-    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+def semver(value: str | None) -> tuple[int, int, int, int] | None:
+    """``"v1.2.3"`` as ``(1, 2, 3, 1)``; a prerelease (``"1.2.3-rc1"``) ends in 0, so
+    it sorts below its own final release. None when it is not a version."""
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(-)?", (value or "").strip())
+    return (int(m[1]), int(m[2]), int(m[3]), 0 if m[4] else 1) if m else None

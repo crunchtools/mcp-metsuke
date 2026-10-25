@@ -1011,9 +1011,10 @@ async def nagios_health(
     """What is broken now and what kept breaking, one record per qualifying check.
 
     A check qualifies when it is not OK now, had ``min_events`` or more problem
-    events in ``hours``, had any hard CRITICAL or DOWN, or paged. The roll-up
-    lists its noisiest rows and counts the rest; a quieter check that paged is
-    still caught through the notification history. Records come sorted open
+    events in ``hours``, or paged. Only hard CRITICAL and DOWN page Hermes, and
+    the roll-up does not split its hard count by state, so the notification
+    history is what says a check went hard CRITICAL. The roll-up lists its
+    noisiest rows and counts the rest. Records come sorted open
     first, then noisiest, and carry their status and history links already
     URL-encoded and their times in ``timezone``. Plugin output is withheld
     from any result Trentina flagged; counts, states and times are kept.
@@ -1051,6 +1052,15 @@ async def nagios_health(
                 output_now=None if res.flagged else row["output"][:MAX_NAGIOS_OUTPUT],
             )
     args = {"hours": opts.hours}
+    if res := await _nagios_text(
+        gw, section, opts.backend, "nagios_notification_history_tool", args
+    ):
+        pages = ops_parsers.nagios_notifications(res.text)
+        section["stats"]["pages"] = len(pages)
+        for row in pages:
+            record = check(row["host"], row["service"])
+            record["pages"] += 1
+            record["last_page"] = _local(row["at"], zone)
     if res := await _nagios_text(gw, section, opts.backend, "nagios_alert_history_tool", args):
         rows = ops_parsers.nagios_alert_rollup(res.text)
         total, more = ops_parsers.nagios_rollup_extent(res.text)
@@ -1058,11 +1068,8 @@ async def nagios_health(
             checks_with_problems=total, rollup_listed=len(rows), rollup_more=more
         )
         for row in rows:
-            hard_critical = row["hard"] > 0 and (
-                row["counts"].get("CRITICAL", 0) or row["counts"].get("DOWN", 0)
-            )
             key = (row["host"], row["service"])
-            if key not in checks and row["events"] < opts.min_events and not hard_critical:
+            if key not in checks and row["events"] < opts.min_events:
                 continue
             check(*key).update(
                 events=row["events"],
@@ -1073,15 +1080,6 @@ async def nagios_health(
                 last_state=row["last_state"],
                 last_output=None if res.flagged else row["output"][:MAX_NAGIOS_OUTPUT],
             )
-    if res := await _nagios_text(
-        gw, section, opts.backend, "nagios_notification_history_tool", args
-    ):
-        pages = ops_parsers.nagios_notifications(res.text)
-        section["stats"]["pages"] = len(pages)
-        for row in pages:
-            record = check(row["host"], row["service"])
-            record["pages"] += 1
-            record["last_page"] = _local(row["at"], zone)
     section["records"] = sorted(
         checks.values(),
         key=lambda r: (not r["open_now"], -r["events"], -r["pages"], r["host"], r["service"] or ""),
@@ -1142,6 +1140,19 @@ async def _record_issue(
     return issues[0], res.flagged
 
 
+def _capped_parts(parts: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Each part's items capped at ``MAX_ASHIGARU_RECORDS``, and its stats written to match:
+    ``listed`` is what is emitted, ``more`` adds what the cap dropped to the issue's own tail."""
+    for part in parts.values():
+        dropped = max(0, len(part["items"]) - MAX_ASHIGARU_RECORDS)
+        part["items"] = part["items"][:MAX_ASHIGARU_RECORDS]
+        part["more"] += dropped
+    return {
+        name: {"count": part["count"], "listed": len(part["items"]), "more": part["more"]}
+        for name, part in parts.items()
+    }
+
+
 async def ashigaru_issue(
     gw: Gateway, _window: Window, _now: datetime, options: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1161,12 +1172,9 @@ async def ashigaru_issue(
     issue, flagged = found
     section["stats"]["flagged"] = flagged
     parts = ops_parsers.ashigaru_parts(issue.get("body") or "")
-    section["stats"]["parts"] = {
-        name: {"count": part["count"], "listed": len(part["items"]), "more": part["more"]}
-        for name, part in parts.items()
-    }
+    section["stats"]["parts"] = _capped_parts(parts)
     for name, part in parts.items():
-        for item in part["items"][:MAX_ASHIGARU_RECORDS]:
+        for item in part["items"]:
             section["records"].append(
                 {"part": name, **item, "title": None if flagged else item["title"]}
             )
@@ -1211,10 +1219,10 @@ def _deploy_status(newest: str, running: set[str]) -> str:
     release (release mode off) counts as live."""
     if not running:
         return "not-deployed"
-    best = max(running, key=lambda v: ops_parsers.semver(v) or (0, 0, 0))
+    best = max(running, key=lambda v: ops_parsers.semver(v) or (0, 0, 0, 0))
     return (
         "behind"
-        if (ops_parsers.semver(best) or (0, 0, 0)) < (ops_parsers.semver(newest) or (0, 0, 0))
+        if (ops_parsers.semver(best) or (0, 0, 0, 0)) < (ops_parsers.semver(newest) or (0, 0, 0, 0))
         else "live"
     )
 
@@ -1245,7 +1253,7 @@ def _repo_records(
             by_repo.setdefault(item["repo"], []).append(item)
     records = []
     for repo, releases in by_repo.items():
-        newest = max(releases, key=lambda r: ops_parsers.semver(r["version"]) or (0, 0, 0))
+        newest = max(releases, key=lambda r: ops_parsers.semver(r["version"]) or (0, 0, 0, 0))
         record: dict[str, Any] = {
             "part": PUBLISHED_PART,
             "kind": "repo",
@@ -1257,7 +1265,9 @@ def _repo_records(
         }
         if running is not None:
             versions = running.get(repo, set())
-            record["running"] = sorted(versions, key=lambda v: ops_parsers.semver(v) or (0, 0, 0))
+            record["running"] = sorted(
+                versions, key=lambda v: ops_parsers.semver(v) or (0, 0, 0, 0)
+            )
             record["status"] = _deploy_status(newest["version"], versions)
         records.append(record)
     return records
@@ -1282,17 +1292,14 @@ async def crunchtools_releases(
     issue, flagged = found
     section["stats"]["flagged"] = flagged
     parts = ops_parsers.ashigaru_parts(issue.get("body") or "")
-    section["stats"]["parts"] = {
-        name: {"count": part["count"], "listed": len(part["items"]), "more": part["more"]}
-        for name, part in parts.items()
-    }
+    section["stats"]["parts"] = _capped_parts(parts)
     running = await _lotor_versions(gw, section, opts.podman_backend)
     repos = _repo_records(parts.get(PUBLISHED_PART, {}).get("items", []), running)
     section["records"] = repos + [
         {"part": name, "kind": "item", **item, "title": None if flagged else item["title"]}
         for name, part in parts.items()
         if name != PUBLISHED_PART
-        for item in part["items"][:MAX_ASHIGARU_RECORDS]
+        for item in part["items"]
     ]
     section["stats"]["repos_released"] = len(repos)
     if running is not None:
