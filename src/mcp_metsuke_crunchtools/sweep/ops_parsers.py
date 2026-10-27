@@ -20,13 +20,28 @@ _ALERT_ROW = re.compile(
     r"last seen (?P<state>[A-Z]+)(?: \| (?P<output>.*))?$",
     re.M,
 )
-_ALERT_TOTAL = re.compile(r"(?P<total>\d+) host\(s\)/service\(s\)")
+# Anchored on the header's "), ": the planned-events tail also names a host count.
+_ALERT_TOTAL = re.compile(r"\), (?P<total>\d+) host\(s\)/service\(s\)")
 _ALERT_MORE = re.compile(r"^\s+\.\.\. and (?P<more>\d+) quieter one\(s\) not shown", re.M)
+# mcp-nagios 0.8.0+: events during scheduled downtime are left out of the rows
+# above and counted on one closing line instead.
+_ALERT_PLANNED = re.compile(
+    r"^\s+plus (?P<events>\d+) event\(s\) on (?P<objects>\d+) host\(s\)/service\(s\) "
+    r"during scheduled downtime",
+    re.M,
+)
 _STATE_COUNT = re.compile(r"(?P<n>\d+) (?P<state>[A-Z]+)")
 _PROBLEM_ROW = re.compile(
     r"^\s+(?P<name>.+?): (?P<state>[A-Z]+) for (?P<duration>[^(]+?) "
     rf"\(since (?P<since>{_NAGIOS_TS}) UTC\), "
-    r"(?P<kind>HARD|SOFT) (?P<attempt>\d+/\d+)(?P<ack>, acknowledged)?(?: \| (?P<output>.*))?$",
+    r"(?P<kind>HARD|SOFT) (?P<attempt>\d+/\d+)"
+    r"(?P<ack>, acknowledged)?(?P<downtime>, in downtime)?(?: \| (?P<output>.*))?$",
+    re.M,
+)
+_DOWNTIME_ROW = re.compile(
+    rf"^\s+(?P<host>\S+) \[(?P<objects>.*?)\]: (?P<start>{_NAGIOS_TS}) UTC \u2192 "
+    rf"(?P<end>{_NAGIOS_TS}) UTC \((?P<duration>[^,)]+)(?P<ongoing>, ongoing)?\)"
+    r"(?: \| (?P<author>[^:]*?): (?P<comment>.*))?$",
     re.M,
 )
 _NOTIFY_ROW = re.compile(
@@ -69,6 +84,12 @@ def nagios_rollup_extent(text: str) -> tuple[int | None, int]:
     return (int(total["total"]) if total else None), (int(more["more"]) if more else 0)
 
 
+def nagios_planned_events(text: str) -> tuple[int, int]:
+    """Events the roll-up set aside as scheduled downtime, and on how many checks."""
+    m = _ALERT_PLANNED.search(text)
+    return (int(m["events"]), int(m["objects"])) if m else (0, 0)
+
+
 def nagios_current_problems(text: str) -> list[dict[str, Any]]:
     """Rows of ``nagios_current_problems_tool``: what is not OK right now."""
     return [
@@ -80,6 +101,7 @@ def nagios_current_problems(text: str) -> list[dict[str, Any]]:
             "hard": m["kind"] == "HARD",
             "attempt": m["attempt"],
             "acknowledged": bool(m["ack"]),
+            "in_downtime": bool(m["downtime"]),
         }
         for m in _PROBLEM_ROW.finditer(text)
     ]
@@ -90,6 +112,27 @@ def nagios_notifications(text: str) -> list[dict[str, Any]]:
     return [
         {**_target(m), "at": f"{m['at']}Z", "contact": m["contact"]}
         for m in _NOTIFY_ROW.finditer(text)
+    ]
+
+
+def nagios_downtimes(text: str) -> list[dict[str, Any]]:
+    """Rows of ``nagios_downtime_history_tool``: each scheduled downtime window.
+
+    ``objects`` lists what the window covered on the host, "host" being the
+    host check itself; ``comment`` is everything after the author.
+    """
+    return [
+        {
+            "host": m["host"],
+            "objects": [o.strip() for o in m["objects"].split("; ") if o.strip()],
+            "start": f"{m['start']}Z",
+            "end": f"{m['end']}Z",
+            "duration": m["duration"].strip(),
+            "ongoing": bool(m["ongoing"]),
+            "author": (m["author"] or "").strip() or None,
+            "comment": (m["comment"] or "").strip(),
+        }
+        for m in _DOWNTIME_ROW.finditer(text)
     ]
 
 
