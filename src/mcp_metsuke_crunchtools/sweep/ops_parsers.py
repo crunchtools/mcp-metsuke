@@ -118,8 +118,13 @@ def nagios_notifications(text: str) -> list[dict[str, Any]]:
 def nagios_downtimes(text: str) -> list[dict[str, Any]]:
     """Rows of ``nagios_downtime_history_tool``: each scheduled downtime window.
 
-    ``objects`` lists what the window covered on the host, "host" being the
-    host check itself; ``comment`` is everything after the author.
+    Each row has ``host``; ``objects``, what the window covered on that host
+    ("host" being the host check itself); ``start`` and ``end`` as UTC
+    ``"YYYY-MM-DD HH:MM:SS"`` with a trailing ``Z``, ``end`` being the
+    scheduled end even while the window runs; ``duration``, the tool's own
+    text ("15m", "2h 0m"); ``ongoing``, true while the window is open;
+    ``author``, who scheduled it (None when the line has no author); and
+    ``comment``, everything after the author ("" when absent).
     """
     return [
         {

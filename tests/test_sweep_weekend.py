@@ -12,7 +12,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-from mcp_metsuke_crunchtools.sweep import SweepSpec, ops_parsers, run_sweep
+from mcp_metsuke_crunchtools.sweep import SweepSpec, collectors, ops_parsers, run_sweep
 from mcp_metsuke_crunchtools.sweep.client import GatewayResult
 
 NOW = datetime(2026, 10, 24, 23, 0, tzinfo=UTC)
@@ -294,6 +294,20 @@ class TestNagiosHealth:
         assert (lotor["start"], lotor["end"]) == ("Oct 24 6:00 PM", "Oct 24 8:00 PM")
         assert lotor["comment"].endswith("(RT #1550)")
         assert section["status"] == "ok"
+
+    def test_downtimes_and_their_comments_are_capped(self) -> None:
+        line = (
+            "  ctr-a.example.com [host]: 2026-10-20 14:01:17 UTC \u2192 "
+            "2026-10-20 14:16:17 UTC (15m) | agent1: " + "x" * 1000
+        )
+        over = collectors.MAX_NAGIOS_DOWNTIMES + 10
+        gw = self._gw()
+        gw.answers["nagios_downtime_history_tool"] = GatewayResult(
+            text="Downtime windows (last 168h):\n" + "\n".join([line] * over)
+        )
+        downtimes = _sweep(self.STEP, gw)["stats"]["downtimes"]
+        assert len(downtimes) == collectors.MAX_NAGIOS_DOWNTIMES
+        assert all(len(d["comment"]) == collectors.MAX_NAGIOS_OUTPUT for d in downtimes)
 
     def test_no_planned_events_reads_zero(self) -> None:
         stats = _sweep(self.STEP, self._gw())["stats"]
