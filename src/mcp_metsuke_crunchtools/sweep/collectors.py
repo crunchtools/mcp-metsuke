@@ -108,6 +108,7 @@ DEFAULT_SINCE_AFTER_WEEKEND = 3
 DEFAULT_NAGIOS_HOURS = 168
 MAX_NAGIOS_HOURS = 744
 MAX_NAGIOS_OUTPUT = 300
+MAX_NAGIOS_DOWNTIMES = 50
 
 # Ashigaru record issues
 MAX_ASHIGARU_RECORDS = 100
@@ -1006,6 +1007,53 @@ async def _nagios_text(
     return res
 
 
+def _merge_rollup(
+    section: dict[str, Any],
+    res: GatewayResult,
+    checks: dict[tuple[str, str | None], dict[str, Any]],
+    check: Callable[[str, str | None], dict[str, Any]],
+    min_events: int,
+    zone: ZoneInfo,
+) -> None:
+    """Fold the alert roll-up into ``checks``: its stats, and every row that qualifies."""
+    rows = ops_parsers.nagios_alert_rollup(res.text)
+    total, more = ops_parsers.nagios_rollup_extent(res.text)
+    planned_events, planned_objects = ops_parsers.nagios_planned_events(res.text)
+    section["stats"].update(
+        checks_with_problems=total,
+        rollup_listed=len(rows),
+        rollup_more=more,
+        planned_events=planned_events,
+        planned_objects=planned_objects,
+    )
+    for row in rows:
+        key = (row["host"], row["service"])
+        if key not in checks and row["events"] < min_events:
+            continue
+        check(*key).update(
+            events=row["events"],
+            counts=row["counts"],
+            hard_events=row["hard"],
+            first=_local(row["first"], zone),
+            last=_local(row["last"], zone),
+            last_state=row["last_state"],
+            last_output=None if res.flagged else row["output"][:MAX_NAGIOS_OUTPUT],
+        )
+
+
+def _nagios_downtimes(res: GatewayResult, zone: ZoneInfo) -> list[dict[str, Any]]:
+    """Downtime windows in reader time; the comment is withheld when flagged."""
+    return [
+        {
+            **row,
+            "start": _local(row["start"], zone),
+            "end": _local(row["end"], zone),
+            "comment": None if res.flagged else row["comment"][:MAX_NAGIOS_OUTPUT],
+        }
+        for row in ops_parsers.nagios_downtimes(res.text)[:MAX_NAGIOS_DOWNTIMES]
+    ]
+
+
 async def nagios_health(
     gw: Gateway, _window: Window, _now: datetime, options: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1017,8 +1065,11 @@ async def nagios_health(
     history is what says a check went hard CRITICAL. The roll-up lists its
     noisiest rows and counts the rest. Records come sorted open
     first, then noisiest, and carry their status and history links already
-    URL-encoded and their times in ``timezone``. Plugin output is withheld
-    from any result Trentina flagged; counts, states and times are kept.
+    URL-encoded and their times in ``timezone``. Problem events during
+    scheduled downtime are left out of the roll-up and counted in
+    ``planned_events``/``planned_objects``; the downtime windows themselves
+    go in ``stats.downtimes``. Plugin output and downtime comments are
+    withheld from any result Trentina flagged; counts, states and times are kept.
     """
     opts = NagiosOptions(**options)
     zone = ZoneInfo(opts.timezone)
@@ -1033,6 +1084,7 @@ async def nagios_health(
                 "host": host,
                 "service": service,
                 "open_now": False,
+                "in_downtime": False,
                 "pages": 0,
                 "events": 0,
                 "status_url": status_url,
@@ -1050,6 +1102,7 @@ async def nagios_health(
                 duration=row["duration"],
                 hard_now=row["hard"],
                 acknowledged=row["acknowledged"],
+                in_downtime=row["in_downtime"],
                 output_now=None if res.flagged else row["output"][:MAX_NAGIOS_OUTPUT],
             )
     args = {"hours": opts.hours}
@@ -1063,24 +1116,9 @@ async def nagios_health(
             record["pages"] += 1
             record["last_page"] = _local(row["at"], zone)
     if res := await _nagios_text(gw, section, opts.backend, "nagios_alert_history_tool", args):
-        rows = ops_parsers.nagios_alert_rollup(res.text)
-        total, more = ops_parsers.nagios_rollup_extent(res.text)
-        section["stats"].update(
-            checks_with_problems=total, rollup_listed=len(rows), rollup_more=more
-        )
-        for row in rows:
-            key = (row["host"], row["service"])
-            if key not in checks and row["events"] < opts.min_events:
-                continue
-            check(*key).update(
-                events=row["events"],
-                counts=row["counts"],
-                hard_events=row["hard"],
-                first=_local(row["first"], zone),
-                last=_local(row["last"], zone),
-                last_state=row["last_state"],
-                last_output=None if res.flagged else row["output"][:MAX_NAGIOS_OUTPUT],
-            )
+        _merge_rollup(section, res, checks, check, opts.min_events, zone)
+    if res := await _nagios_text(gw, section, opts.backend, "nagios_downtime_history_tool", args):
+        section["stats"]["downtimes"] = _nagios_downtimes(res, zone)
     section["records"] = sorted(
         checks.values(),
         key=lambda r: (not r["open_now"], -r["events"], -r["pages"], r["host"], r["service"] or ""),

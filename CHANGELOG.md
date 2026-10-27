@@ -8,6 +8,24 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+### Added
+
+- `nagios_health` reads scheduled downtime (mcp-nagios 0.8.0): each record
+  carries `in_downtime`, the section's stats carry `planned_events` and
+  `planned_objects` (problem events the roll-up set aside as planned) and
+  `downtimes`, the week's downtime windows from
+  `nagios_downtime_history_tool` with times local and the comment withheld
+  when flagged. A failed downtime call marks the section partial and leaves
+  the rest.
+
+### Fixed
+
+- A current problem in scheduled downtime no longer drops out of the
+  `infra` section: the problems parser now accepts the ", in downtime"
+  suffix, which it failed to match.
+- The roll-up's checked total is read only from its header, so the
+  planned-events line can no longer be taken for it.
+
 ## [3.4.0] - 2026-10-25
 
 ### Added

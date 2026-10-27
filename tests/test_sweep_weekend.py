@@ -12,7 +12,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-from mcp_metsuke_crunchtools.sweep import SweepSpec, ops_parsers, run_sweep
+from mcp_metsuke_crunchtools.sweep import SweepSpec, collectors, ops_parsers, run_sweep
 from mcp_metsuke_crunchtools.sweep.client import GatewayResult
 
 NOW = datetime(2026, 10, 24, 23, 0, tzinfo=UTC)
@@ -30,6 +30,15 @@ PROBLEMS = """=== Service Problems ===
   lotor.dc3.crunchtools.com / Host memory usage: WARNING for 1h 25m (since 2026-10-24 22:45:07 UTC), HARD 3/3 | WARNING - Memory 86% used [13897MB/15986MB]
 
 Total: 0 host(s), 2 service(s)
+"""  # noqa: E501
+PROBLEMS_DOWNTIME = """=== Service Problems ===
+  ctr-mcp-trove / MCP port: CRITICAL for 2h 3m (since 2026-10-24 17:45:00 UTC), HARD 3/3, acknowledged, in downtime | connection refused
+  ctr-mcp-trove / HTTPS: WARNING for 4m (since 2026-10-24 22:56:00 UTC), SOFT 1/3, in downtime | HTTP WARNING
+"""  # noqa: E501
+PLANNED = "  plus 7 event(s) on 3 host(s)/service(s) during scheduled downtime\n"
+DOWNTIMES = """Downtime windows (last 168h), 2 scheduling(s):
+  ctr-grafana.example.com [host; Grafana port; HTTPS external]: 2026-10-20 14:01:17 UTC → 2026-10-20 14:16:17 UTC (15m) | agent1: tig deploy
+  lotor.dc3.crunchtools.com [Host failed systemd units]: 2026-10-24 22:00:00 UTC → 2026-10-25 00:00:00 UTC (2h 0m, ongoing) | agent1: Agent1: deploying mcp-trove 1.0.7 (RT #1550)
 """  # noqa: E501
 PAGES = """Notifications (last 168h):
   [2026-10-24 09:00:54 UTC] lotor.dc3.crunchtools.com / Host failed systemd units → hermes via notify-hermes-service: SYSTEMD UNITS CRITICAL - 1 failed units: podman-auto-update.service
@@ -154,6 +163,42 @@ class TestNagiosParsers:
         assert [r["acknowledged"] for r in rows] == [True, False]
         assert rows[1]["output"].endswith("[13897MB/15986MB]")
 
+    def test_problems_in_downtime_still_parse(self) -> None:
+        rows = ops_parsers.nagios_current_problems(PROBLEMS_DOWNTIME)
+        flags = [(r["acknowledged"], r["in_downtime"]) for r in rows]
+        assert flags == [(True, True), (False, True)]
+        assert rows[1]["attempt"] == "1/3"
+        assert rows[0]["output"] == "connection refused"
+
+    def test_planned_events_tail(self) -> None:
+        assert ops_parsers.nagios_planned_events(ROLLUP) == (0, 0)
+        rollup = ROLLUP + PLANNED
+        assert ops_parsers.nagios_planned_events(rollup) == (7, 3)
+        assert ops_parsers.nagios_rollup_extent(rollup) == (222, 182)
+        assert len(ops_parsers.nagios_alert_rollup(rollup)) == 5
+
+    def test_planned_events_with_nothing_else_is_not_a_total(self) -> None:
+        empty = "No problem alerts in the last 168 hour(s).\n" + PLANNED
+        assert ops_parsers.nagios_planned_events(empty) == (7, 3)
+        assert ops_parsers.nagios_rollup_extent(empty) == (None, 0)
+        assert ops_parsers.nagios_alert_rollup(empty) == []
+
+    def test_downtimes(self) -> None:
+        rows = ops_parsers.nagios_downtimes(DOWNTIMES)
+        assert rows[0]["objects"] == ["host", "Grafana port", "HTTPS external"]
+        assert (rows[0]["duration"], rows[0]["ongoing"]) == ("15m", False)
+        assert rows[1] == {
+            "host": "lotor.dc3.crunchtools.com",
+            "objects": ["Host failed systemd units"],
+            "start": "2026-10-24 22:00:00Z",
+            "end": "2026-10-25 00:00:00Z",
+            "duration": "2h 0m",
+            "ongoing": True,
+            "author": "agent1",
+            "comment": "Agent1: deploying mcp-trove 1.0.7 (RT #1550)",
+        }
+        assert ops_parsers.nagios_downtimes("No scheduled downtime in the last 168 hour(s).") == []
+
     def test_notifications(self) -> None:
         rows = ops_parsers.nagios_notifications(PAGES)
         assert rows[1] == {
@@ -194,6 +239,7 @@ class TestNagiosHealth:
                 "nagios_current_problems_tool": GatewayResult(text=PROBLEMS),
                 "nagios_alert_history_tool": GatewayResult(text=ROLLUP, flagged=flagged),
                 "nagios_notification_history_tool": GatewayResult(text=PAGES),
+                "nagios_downtime_history_tool": GatewayResult(text=DOWNTIMES, flagged=flagged),
             }
         )
 
@@ -230,6 +276,53 @@ class TestNagiosHealth:
         drift = next(r for r in section["records"] if r["service"] == "Git Drift /srv")
         assert drift["events"] == 34
         assert drift["last_output"] is None
+        assert all(d["comment"] is None for d in section["stats"]["downtimes"])
+        assert section["stats"]["downtimes"][1]["ongoing"]
+
+    def test_downtime_windows_and_planned_events(self) -> None:
+        gw = self._gw()
+        gw.answers["nagios_current_problems_tool"] = GatewayResult(text=PROBLEMS_DOWNTIME)
+        gw.answers["nagios_alert_history_tool"] = GatewayResult(text=ROLLUP + PLANNED)
+        section = _sweep(self.STEP, gw)
+        assert gw.calls[-1] == ("nagios", "nagios_downtime_history_tool", {"hours": 168})
+        port = next(r for r in section["records"] if r["service"] == "MCP port")
+        assert (port["open_now"], port["in_downtime"], port["acknowledged"]) == (True, True, True)
+        assert not next(r for r in section["records"] if not r["open_now"])["in_downtime"]
+        stats = section["stats"]
+        assert (stats["planned_events"], stats["planned_objects"]) == (7, 3)
+        lotor = stats["downtimes"][1]
+        assert (lotor["start"], lotor["end"]) == ("Oct 24 6:00 PM", "Oct 24 8:00 PM")
+        assert lotor["comment"].endswith("(RT #1550)")
+        assert section["status"] == "ok"
+
+    def test_downtimes_and_their_comments_are_capped(self) -> None:
+        line = (
+            "  ctr-a.example.com [host]: 2026-10-20 14:01:17 UTC \u2192 "
+            "2026-10-20 14:16:17 UTC (15m) | agent1: " + "x" * 1000
+        )
+        over = collectors.MAX_NAGIOS_DOWNTIMES + 10
+        gw = self._gw()
+        gw.answers["nagios_downtime_history_tool"] = GatewayResult(
+            text="Downtime windows (last 168h):\n" + "\n".join([line] * over)
+        )
+        downtimes = _sweep(self.STEP, gw)["stats"]["downtimes"]
+        assert len(downtimes) == collectors.MAX_NAGIOS_DOWNTIMES
+        assert all(len(d["comment"]) == collectors.MAX_NAGIOS_OUTPUT for d in downtimes)
+
+    def test_no_planned_events_reads_zero(self) -> None:
+        stats = _sweep(self.STEP, self._gw())["stats"]
+        assert (stats["planned_events"], stats["planned_objects"]) == (0, 0)
+
+    def test_downtime_history_failure_is_recorded_not_fatal(self) -> None:
+        gw = self._gw()
+        gw.answers["nagios_downtime_history_tool"] = GatewayResult(
+            text="", error="no Nagios log configured"
+        )
+        section = _sweep(self.STEP, gw)
+        assert section["status"] == "partial"
+        assert section["errors"] == ["nagios_downtime_history_tool: no Nagios log configured"]
+        assert "downtimes" not in section["stats"]
+        assert section["records"][0]["open_now"]
 
 
 class TestAshigaruIssue:
