@@ -8,6 +8,8 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-10-27
+
 ### Added
 
 - `nagios_health` reads scheduled downtime (mcp-nagios 0.8.0): each record

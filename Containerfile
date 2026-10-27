@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir .
 FROM quay.io/hummingbird/python:3.14-fips
 
 LABEL name="mcp-metsuke-crunchtools" \
-      version="3.4.0" \
+      version="3.5.0" \
       summary="Stateful reports catalog MCP server (definitions + gathered outputs)" \
       description="Durable, cross-agent home for report definitions and their gathered outputs" \
       maintainer="crunchtools.com" \
