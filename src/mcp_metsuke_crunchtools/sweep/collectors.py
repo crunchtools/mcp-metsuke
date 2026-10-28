@@ -91,7 +91,7 @@ JIRA_SEARCH_LIMIT = 50
 DEFAULT_JIRA_LIMIT = 25
 DEFAULT_JIRA_DETAIL_CHARS = 800
 MAX_JIRA_DETAIL_CHARS = 2000
-JIRA_FIELDS = "summary,status,issuetype,created,components,description"
+JIRA_FIELDS = "summary,status,issuetype,created,updated,components,description"
 JIRA_CONTACT_FIELDS = ("name", "email", "company")
 # Intake-form fields worth a line in the briefing, in the order they read best.
 JIRA_DETAIL_FIELDS = ("image name", "version", "purpose", "page url", "description")
@@ -911,6 +911,7 @@ def _jira_record(
         "components": issue.get("components") or [],
         "created": created.isoformat() if created else None,
         "age_days": _age_days(created, now) if created else None,
+        "updated": issue.get("updated"),
         "summary": None if flagged else issue.get("summary"),
         "contact": {name: form.get(name) for name in JIRA_CONTACT_FIELDS},
         "detail": _jira_detail(form, opts.detail_chars),
@@ -931,7 +932,7 @@ async def jira_issues(
     that fails is recorded and the remaining ones still run. The intake forms
     on the request page put the reporter's name, address and technical specs
     in the description, so a flagged result withholds ``summary``, ``detail``
-    and ``contact`` and keeps only the key, link, status and dates.
+    and ``contact`` and keeps only the key, link, status and dates (``created``, ``updated``).
     """
     opts = JiraOptions(**options)
     section = _section("jira_issues")

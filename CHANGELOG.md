@@ -10,6 +10,8 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ### Added
 
+- `jira_issues` records carry `updated`, Jira's last-update time, so the daily
+  briefing can list triaged HUM requests by when they were last triaged.
 - `nagios_health` reads scheduled downtime (mcp-nagios 0.8.0): each record
   carries `in_downtime`, the section's stats carry `planned_events` and
   `planned_objects` (problem events the roll-up set aside as planned) and

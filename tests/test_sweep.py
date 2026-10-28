@@ -1067,6 +1067,7 @@ JIRA_ISSUES = [
         "issue_type": {"name": "Story"},
         "components": ["Image Request"],
         "created": "2026-09-26T18:45:27.798+0000",
+        "updated": "2026-09-27T03:29:51.043+0000",
     },
     {
         "key": "PROJ-102",
@@ -1118,6 +1119,9 @@ class TestJiraCollector:
             "image name: Nightjar | version: 3.18 | purpose: Mirror registry on air-gapped networks"
         )
         assert record["age_days"] == 0.7
+        assert record["updated"] == "2026-09-27T03:29:51.043+0000"
+        # An issue without an updated time keeps the key with None.
+        assert section["records"][1]["updated"] is None
         assert section["records"][1]["detail"].startswith("page url: https://images.example.net")
         # Both queries ran, so each issue appears once per query.
         assert len(section["records"]) == 4
