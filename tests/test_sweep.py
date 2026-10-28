@@ -1068,6 +1068,7 @@ JIRA_ISSUES = [
         "components": ["Image Request"],
         "created": "2026-09-26T18:45:27.798+0000",
         "updated": "2026-09-27T03:29:51.043+0000",
+        "labels": ["triage-staged", "family-tooling"],
     },
     {
         "key": "PROJ-102",
@@ -1120,8 +1121,10 @@ class TestJiraCollector:
         )
         assert record["age_days"] == 0.7
         assert record["updated"] == "2026-09-27T03:29:51.043+0000"
-        # An issue without an updated time keeps the key with None.
+        assert record["labels"] == ["triage-staged", "family-tooling"]
+        # An issue without an updated time or labels keeps the keys, empty.
         assert section["records"][1]["updated"] is None
+        assert section["records"][1]["labels"] == []
         assert section["records"][1]["detail"].startswith("page url: https://images.example.net")
         # Both queries ran, so each issue appears once per query.
         assert len(section["records"]) == 4
@@ -1140,6 +1143,18 @@ class TestJiraCollector:
             "New",
             "Story",
         )
+
+    async def test_query_without_description_skips_the_form(self) -> None:
+        gw = FakeGateway(lambda b, t, a: _ok({"issues": JIRA_ISSUES[:1]}))
+        queries = [
+            {**q, "description": q["label"] == "new"} for q in JIRA_STEP["options"]["queries"]
+        ]
+        step = {**JIRA_STEP, "options": {"queries": queries}}
+        await run_sweep(SweepSpec(steps=[step]), gw, now=NOW)
+        fields = [a["fields"] for _, _, a in gw.calls]
+        assert fields[0].endswith(",description")
+        assert "description" not in fields[1]
+        assert "labels" in fields[1]
 
     async def test_one_failed_query_is_partial_and_the_rest_run(self) -> None:
         def route(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult:
