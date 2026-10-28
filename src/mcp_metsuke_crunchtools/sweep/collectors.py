@@ -91,7 +91,8 @@ JIRA_SEARCH_LIMIT = 50
 DEFAULT_JIRA_LIMIT = 25
 DEFAULT_JIRA_DETAIL_CHARS = 800
 MAX_JIRA_DETAIL_CHARS = 2000
-JIRA_FIELDS = "summary,status,issuetype,created,updated,components,description"
+JIRA_FIELDS = "summary,status,issuetype,created,updated,components,labels,description"
+JIRA_FIELDS_NO_DESCRIPTION = JIRA_FIELDS.removesuffix(",description")
 JIRA_CONTACT_FIELDS = ("name", "email", "company")
 # Intake-form fields worth a line in the briefing, in the order they read best.
 JIRA_DETAIL_FIELDS = ("image name", "version", "purpose", "page url", "description")
@@ -870,6 +871,9 @@ class JiraQuery(BaseModel, extra="forbid"):
     label: str = Field(..., min_length=1, max_length=32, pattern=r"^[a-z0-9_-]+$")
     jql: str = Field(..., min_length=1, max_length=MAX_JQL_CHARS)
     limit: int = Field(default=DEFAULT_JIRA_LIMIT, ge=1, le=JIRA_SEARCH_LIMIT)
+    # False skips the intake-form description: no contact or detail, and none
+    # of the customer's free text that can get a whole result flagged.
+    description: bool = True
 
 
 class JiraOptions(BaseModel, extra="forbid"):
@@ -909,6 +913,7 @@ def _jira_record(
         "issue_type": (issue.get("issue_type") or {}).get("name"),
         "status": (issue.get("status") or {}).get("name"),
         "components": issue.get("components") or [],
+        "labels": issue.get("labels") or [],
         "created": created.isoformat() if created else None,
         "age_days": _age_days(created, now) if created else None,
         "updated": issue.get("updated"),
@@ -945,7 +950,7 @@ async def jira_issues(
             {
                 "jql": query.jql.replace("{since}", since),
                 "limit": query.limit,
-                "fields": JIRA_FIELDS,
+                "fields": JIRA_FIELDS if query.description else JIRA_FIELDS_NO_DESCRIPTION,
             },
         )
         if not res.ok:

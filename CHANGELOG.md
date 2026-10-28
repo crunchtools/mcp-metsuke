@@ -10,6 +10,10 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ### Added
 
+- `jira_issues` records carry `labels`, and a query can set
+  `description: false` to skip the intake form, so the customer's free text
+  can't get a whole result flagged. The daily briefing builds its HUM groups
+  from labels.
 - `jira_issues` records carry `updated`, Jira's last-update time, so the daily
   briefing can list triaged HUM requests by when they were last triaged.
 - `nagios_health` reads scheduled downtime (mcp-nagios 0.8.0): each record
