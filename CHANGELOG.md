@@ -8,6 +8,8 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-10-27
+
 ### Added
 
 - `jira_issues` records carry `labels`, and a query can set
