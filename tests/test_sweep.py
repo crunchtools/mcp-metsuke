@@ -2095,9 +2095,9 @@ class TestGetSweepThroughMcp:
         async with Client(server.mcp) as client:
             index = await client.call_tool("get_sweep_tool", {"run_id": run["run_id"]})
             page = await client.call_tool("get_sweep_tool", {"report_name": "r", "section": "s"})
-            # fastmcp 4 reports a parameter ValidationError as JSON-RPC
-            # "invalid params", not as an is_error tool result.
-            with pytest.raises(MCPError, match="Invalid request parameters"):
+            # fastmcp 4.1 reports a parameter ValidationError as an is_error
+            # tool result (4.0 sent JSON-RPC "invalid params"); refused either way.
+            with pytest.raises(ToolError, match="validation error for GetSweepParams"):
                 await client.call_tool("get_sweep_tool", {"section": "s"})
         assert index.structured_content["sections"]["s"]["record_count"] == 1
         assert page.structured_content["records"] == [{"a": 1}]
