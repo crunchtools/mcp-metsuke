@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, datetime
+from importlib.metadata import version
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 from zoneinfo import ZoneInfo
 
@@ -56,6 +57,78 @@ def _sweep_slot() -> asyncio.Semaphore:
 
 
 _HTTP_TIMEOUT = 30.0
+# The alert endpoint answers with a short JSON acknowledgement. The ceiling is
+# here so that whatever else answers on that URL -- an SSO interstitial, a
+# proxy error page -- cannot be read whole into the process.
+MAX_RESPONSE_SIZE = 1024 * 1024
+BODY_SNIPPET_CHARS = 200
+ELLIPSIS = "..."
+
+# Identify this client by name. httpx otherwise sends `python-httpx/<version>`,
+# which bot protection answers with an HTML challenge page instead of the API --
+# the failure that cost an afternoon on mcp-wordpress (RT #1596). The version
+# comes from installed package metadata so it cannot drift from pyproject.toml.
+USER_AGENT = (
+    f"mcp-metsuke-crunchtools/{version('mcp-metsuke-crunchtools')} "
+    "(+https://github.com/crunchtools/mcp-metsuke)"
+)
+
+
+class _OversizedResponseError(Exception):
+    """A body that passed the ceiling.
+
+    Private, and caught one frame up: the public vocabulary here is
+    `CallbackDispatchError`, which is what the caller already handles, and the
+    report name it needs is not known this far down.
+    """
+
+
+def _body_snippet(body: bytes) -> str:
+    """A short, single-line excerpt of a response body, for an error message."""
+    prefix = body[: BODY_SNIPPET_CHARS * 4]
+    collapsed = " ".join(prefix.decode("utf-8", errors="replace").split())
+    if not collapsed:
+        return "<empty body>"
+    if len(collapsed) > BODY_SNIPPET_CHARS or len(body) > len(prefix):
+        return collapsed[: BODY_SNIPPET_CHARS - len(ELLIPSIS)] + ELLIPSIS
+    return collapsed
+
+
+def _where(response: httpx.Response) -> str:
+    """Which request a response answered, for an error message.
+
+    The URL actually requested: a callback that lands on a login page or a
+    proxy error answers from somewhere else entirely, and that is the case a
+    bare status code cannot describe.
+    """
+    return (
+        f"{response.request.method} {response.request.url} "
+        f"(HTTP {response.status_code}, "
+        f"{response.headers.get('content-type', 'no content-type')})"
+    )
+
+
+async def _read_capped(response: httpx.Response) -> bytes:
+    """Read the body, aborting as soon as it would pass MAX_RESPONSE_SIZE.
+
+    There was no limit here at all: `client.post` read whatever answered on the
+    alert URL whole into the process before `raise_for_status()` looked at it.
+    Measured before each chunk is copied in, because `aiter_bytes()` promises
+    nothing about chunk size: one chunk can be the whole body.
+    """
+    declared = response.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_RESPONSE_SIZE:
+        raise _OversizedResponseError(
+            f"{_where(response)} declared {declared} bytes, over the {MAX_RESPONSE_SIZE} byte limit"
+        )
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        if len(body) + len(chunk) > MAX_RESPONSE_SIZE:
+            raise _OversizedResponseError(
+                f"{_where(response)} sent over the {MAX_RESPONSE_SIZE} byte limit"
+            )
+        body += chunk
+    return bytes(body)
 
 
 class GatherSpec(TypedDict):
@@ -135,11 +208,22 @@ async def _post_alert(
         body["source_config"] = json.dumps(spec["source_config"] or {})
     if sweep_status is not None:
         body["sweep_status"] = sweep_status
+    request = client.build_request("POST", url, json=body, headers=headers, timeout=_HTTP_TIMEOUT)
     try:
-        resp = await client.post(url, json=body, headers=headers, timeout=_HTTP_TIMEOUT)
-        resp.raise_for_status()
-    except httpx.HTTPError as exc:
+        resp = await client.send(request, stream=True)
+        try:
+            payload = await _read_capped(resp)
+        finally:
+            await resp.aclose()
+    # The URL is named here too, not only on a status: httpx's own message does
+    # not reliably carry it, and a timeout with no endpoint in it is the hardest
+    # of these failures to place.
+    except _OversizedResponseError as exc:
         raise CallbackDispatchError(name, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise CallbackDispatchError(name, f"POST {url}: {exc}") from exc
+    if not resp.is_success:
+        raise CallbackDispatchError(name, f"{_where(resp)} returned {_body_snippet(payload)}")
     return resp.status_code
 
 
@@ -272,7 +356,7 @@ async def trigger_now(
         sweep_status: The run's sweep status, when it was swept.
     """
     cfg = get_config()
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}) as client:
         return await _post_alert(client, cfg, name, run_id, spec, sweep_status)
 
 
@@ -356,7 +440,7 @@ async def _loop() -> None:
         cfg.scheduler_poll_seconds,
         cfg.trentina_alert_url,
     )
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}) as client:
         while True:
             try:
                 await _tick(conn, cfg, client, started_at)

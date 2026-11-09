@@ -12,7 +12,7 @@ import asyncio
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import httpx as httpx_module
 import httpx2
@@ -52,9 +52,6 @@ from mcp_metsuke_crunchtools.tools import (
     trigger_report,
     upsert_definition,
 )
-
-if TYPE_CHECKING:
-    import httpx
 
 SCOTT = "U9VN3S1ST"
 TZ = "America/New_York"
@@ -1369,7 +1366,7 @@ class TestScheduledSweep:
     async def test_tick_sweeps_in_background_then_dispatches(
         self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from .test_tools import _FakeClient
+        from .test_tools import Dispatched, recording_client
 
         _configure_sweep(monkeypatch)
         monkeypatch.setattr(scheduler, "_is_due", lambda *_a: True)
@@ -1378,14 +1375,14 @@ class TestScheduledSweep:
         )
         dispatched = _capture_dispatch(monkeypatch)
         db.upsert_definition("daily", "compose", "kagetora", "0 6 * * 1-5", TZ, SWEPT_CONFIG)
-        _FakeClient.posted.clear()
+        Dispatched.posted.clear()
         await scheduler._tick(
             in_memory_db,
             config_mod.get_config(),
-            cast("httpx.AsyncClient", _FakeClient()),
+            recording_client(),
             datetime.now(UTC),
         )
-        assert _FakeClient.posted == []  # nothing dispatched inline
+        assert Dispatched.posted == []  # nothing dispatched inline
         definition = db.get_definition("daily")
         assert definition is not None
         assert definition["last_fired_at"]
@@ -1400,7 +1397,7 @@ class TestScheduledSweep:
     async def test_tick_without_gateway_config_still_dispatches(
         self, in_memory_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from .test_tools import _FakeClient
+        from .test_tools import recording_client
 
         monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
         monkeypatch.setenv("METSUKE_ALERT_TOKEN", "alert")
@@ -1411,7 +1408,7 @@ class TestScheduledSweep:
         await scheduler._tick(
             in_memory_db,
             config_mod.get_config(),
-            cast("httpx.AsyncClient", _FakeClient()),
+            recording_client(),
             datetime.now(UTC),
         )
         await asyncio.gather(*scheduler._background)
@@ -1655,15 +1652,15 @@ class TestCallbackBody:
     async def test_sweep_status_is_posted_only_when_given(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from .test_tools import _FakeClient
+        from .test_tools import Dispatched, recording_client
 
         _configure_sweep(monkeypatch)
-        client = cast("httpx.AsyncClient", _FakeClient())
-        _FakeClient.posted.clear()
+        client = recording_client()
+        Dispatched.posted.clear()
         await scheduler._post_alert(client, config_mod.get_config(), "r", "r@1", None, "partial")
         await scheduler._post_alert(client, config_mod.get_config(), "r", "r@2")
-        assert _FakeClient.posted[0]["sweep_status"] == "partial"
-        assert "sweep_status" not in _FakeClient.posted[1]
+        assert Dispatched.posted[0]["sweep_status"] == "partial"
+        assert "sweep_status" not in Dispatched.posted[1]
 
 
 class TestGatewayOverHttp:

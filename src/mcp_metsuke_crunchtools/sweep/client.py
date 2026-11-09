@@ -21,6 +21,7 @@ import logging
 import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from importlib.metadata import version
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
@@ -39,6 +40,21 @@ logger = logging.getLogger("mcp_metsuke.sweep.client")
 WARNING_PREFIX = "[TRENTINA WARNING]"
 DEFAULT_CALL_TIMEOUT = 120.0
 MAX_ERROR_CHARS = 500
+
+# Identify this client by name. httpx2 otherwise sends `python-httpx/<version>`,
+# which bot protection answers with an HTML challenge page instead of the API --
+# the failure that cost an afternoon on mcp-wordpress (RT #1596). The version
+# comes from installed package metadata so it cannot drift from pyproject.toml.
+USER_AGENT = (
+    f"mcp-metsuke-crunchtools/{version('mcp-metsuke-crunchtools')} "
+    "(+https://github.com/crunchtools/mcp-metsuke)"
+)
+
+# fastmcp reads the gateway's body inside its own httpx2 client, so the ceiling
+# here is the one it offers: a bound on a single SSE event. Declared rather than
+# defaulted, so a fastmcp release that changes its default cannot change what
+# this server accepts without a diff saying so.
+MAX_SSE_EVENT_BYTES = 1024 * 1024
 
 # What one tool call can fail with once the session is up. Anything else is a
 # bug in Metsuke and should crash loudly rather than be recorded as a source
@@ -184,5 +200,9 @@ def connect_gateway(url: str, token: str, timeout: float = DEFAULT_CALL_TIMEOUT)
         ValueError: ``url`` fails ``check_gateway_url``.
     """
     check_gateway_url(url)
-    transport = StreamableHttpTransport(url, headers={"Authorization": f"Bearer {token}"})
+    transport = StreamableHttpTransport(
+        url,
+        headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
+        max_sse_event_size=MAX_SSE_EVENT_BYTES,
+    )
     return TrentinaGateway(Client(transport, timeout=timeout), timeout)

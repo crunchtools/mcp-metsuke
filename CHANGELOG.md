@@ -8,6 +8,52 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-11-09
+
+### Fixed
+
+- **The gather callback's response had no size limit at all.** `client.post`
+  read whatever answered on the alert URL whole into the process before
+  `raise_for_status()` looked at it, so an SSO interstitial or a proxy error
+  page on that URL was an unbounded read. The reply is now read in bounded
+  pieces under a 1MB cap, measured before each chunk is copied in, because
+  `aiter_bytes()` promises nothing about chunk size: one chunk can be the whole
+  body. A token acknowledgement is a few JSON fields; anything page-sized
+  answering there is not one.
+
+- **A failed dispatch says which site answered, and with what.** It was
+  `raise_for_status()`, whose exception names neither the URL nor the body — the
+  shape that cost an afternoon on mcp-wordpress (RT #1596), where a Cloudflare
+  challenge page read as a parse error. A failure now names the method, the
+  full requested URL, the status, the content-type and a bounded body snippet,
+  and a transport failure names the request too, since httpx's own message does
+  not reliably carry it.
+
+### Added
+
+- **The client says what it is**, on both outbound paths:
+  `User-Agent: mcp-metsuke-crunchtools/<version> (+<repo url>)`, with the
+  version read from installed package metadata so it cannot drift from
+  `pyproject.toml`. httpx otherwise sends `python-httpx/<version>`, which is
+  what bot protection answers with a challenge page instead of the API.
+
+- The Trentina gateway transport **declares** its SSE event ceiling rather than
+  inheriting fastmcp's default, so a fastmcp release that changes that default
+  cannot change what this server accepts without a diff saying so. The body on
+  that path is read inside fastmcp's own httpx2 client; the header and that cap
+  are what this code owns there, and both are now pinned by a test.
+
+### Changed
+
+- The suite's callback tests ride an `httpx.MockTransport` rather than a fake
+  standing in for `client.post`. A fake of a convenience method cannot see the
+  header the client adds or the bounded read it performs — and a patch on a
+  method the code no longer calls does not fail, it lets the test reach the
+  real network.
+
+- Constitution pin v1.31.0 → v1.36.0, which is where the machine check for all
+  of the above lives (MCP Server profile 1.8.0, Layer 3).
+
 ## [3.5.1] - 2026-10-31
 
 ### Security
