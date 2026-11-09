@@ -1,0 +1,26 @@
+# Judged Gatehouse findings. Each needs a status and a reason; see
+# crunchtools/gatehouse. Raised against the RT #1601 outbound HTTP contract
+# work (constitution v1.36.0, MCP Server profile 1.8.0).
+
+# HIGH: the dispatch error quotes up to 200 characters of the response body.
+# True, and it is the third MUST of the profile rather than an oversight.
+[[findings]]
+agent = "security"
+category = "security"
+file = "src/mcp_metsuke_crunchtools/scheduler.py"
+evidence = "if not resp.is_success:\n    raise CallbackDispatchError(name, f\"{_where(resp)} returned {_body_snippet(payload)}\")"
+status = "not-a-bug"
+reason = """
+The snippet is the diagnosis this change exists to add, and the alternative is
+the message it replaced: `raise_for_status()`, which named neither the URL nor
+the body. That is the RT #1596 shape, where a Cloudflare challenge page read as
+a parse error for an afternoon, and status plus content-type cannot tell a
+challenge page from a service that is down.
+
+What can be in this body is bounded by what this endpoint is. The request
+carries no credential -- the token rides in a header (Trentina #333) and the
+body is the report name, the run id and the gather spec -- so an intermediary
+echoing the request back echoes nothing secret. The reply itself is Trentina's
+own alert acknowledgement. The snippet is capped at 200 characters, and the URL
+beside it is already reduced to scheme, host and endpoint.
+"""

@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+import httpx
 import pytest
 
 from mcp_metsuke_crunchtools import config as config_mod
@@ -37,8 +38,6 @@ from mcp_metsuke_crunchtools.tools.outputs import (
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Awaitable, Callable
-
-    import httpx
 
 EXPECTED_TOOL_COUNT = 10
 
@@ -242,30 +241,44 @@ class TestDefinitionTools:
         assert stored["next_fire_at"] is None
 
 
-class _FakeResponse:
-    status_code = 200
-
-    def raise_for_status(self) -> None:
-        pass
+# Captured before any test patches `httpx.AsyncClient`, which is the global
+# module attribute: `scheduler.httpx` IS httpx.
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
 
 
-class _FakeClient:
+class Dispatched:
+    """What the callback dispatch actually put on the wire.
+
+    The previous fake stood in for `client.post`, which the dispatch no longer
+    calls. A patch on a method the code does not call does not fail -- it lets
+    the test reach the real network -- and it could not see the agent string or
+    the bounded read either, both of which belong to the client rather than to
+    the call.
+    """
+
     posted: ClassVar[list[dict[str, object]]] = []
     # (url, headers) of each post, so a test can see where the token went.
     sent: ClassVar[list[tuple[str, dict[str, str]]]] = []
+    # The reply to answer with; a test that cares sets it.
+    reply: ClassVar[Callable[[httpx.Request], httpx.Response] | None] = None
 
-    async def __aenter__(self) -> _FakeClient:
-        return self
+    @classmethod
+    def handle(cls, request: httpx.Request) -> httpx.Response:
+        cls.posted.append(json.loads(request.content))
+        cls.sent.append((str(request.url), dict(request.headers)))
+        if cls.reply is not None:
+            return cls.reply(request)
+        return httpx.Response(200, json={"ok": True})
 
-    async def __aexit__(self, *_: object) -> bool:
-        return False
 
-    async def post(
-        self, url: str, json: dict[str, object], headers: dict[str, str], timeout: float
-    ) -> _FakeResponse:
-        _FakeClient.posted.append(json)
-        _FakeClient.sent.append((url, headers))
-        return _FakeResponse()
+def recording_client(**kwargs: Any) -> httpx.AsyncClient:
+    """A real client over a mock transport, recording into `Dispatched`.
+
+    Takes the keyword arguments production code passes, so the header it sets
+    is the header the request carries.
+    """
+    kwargs.pop("transport", None)
+    return _REAL_ASYNC_CLIENT(transport=httpx.MockTransport(Dispatched.handle), **kwargs)
 
 
 class TestTriggerReport:
@@ -292,7 +305,7 @@ class TestTriggerReport:
         monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
         monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
         config_mod._config = None
-        monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient())
+        monkeypatch.setattr(scheduler.httpx, "AsyncClient", recording_client)
         await upsert_definition("core-platform-status", "gather it")
         result = await trigger_report("core-platform-status")
         assert result["report"] == "core-platform-status"
@@ -314,11 +327,11 @@ class TestTriggerReport:
         monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
         monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
         config_mod._config = None
-        monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient())
-        _FakeClient.posted.clear()
+        monkeypatch.setattr(scheduler.httpx, "AsyncClient", recording_client)
+        Dispatched.posted.clear()
         await upsert_definition("weekend-report", "gather it", source_config={"window_days": 7})
         result = await trigger_report("weekend-report")
-        body = _FakeClient.posted[-1]
+        body = Dispatched.posted[-1]
         assert body["report"] == "weekend-report"
         assert body["run_id"] == result["run_id"]
         assert body["gather_prompt"] == "gather it"
@@ -334,13 +347,13 @@ class TestPullOwners:
         monkeypatch.delenv("METSUKE_ALERT_TOKEN", raising=False)
         monkeypatch.setenv("METSUKE_PULL_OWNERS", "josui, other")
         config_mod._config = None
-        _FakeClient.posted.clear()
-        monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient())
+        Dispatched.posted.clear()
+        monkeypatch.setattr(scheduler.httpx, "AsyncClient", recording_client)
         await upsert_definition("daily", "gather it", owner_agent="josui")
         result = await trigger_report("daily")
         assert result["dispatched"] == "pull"
         assert result["sweep"] is False
-        assert _FakeClient.posted == []
+        assert Dispatched.posted == []
         rows = await list_outputs("daily")
         assert rows[0]["status"] == "gathering"
         assert rows[0]["run_id"] == result["run_id"]
@@ -353,7 +366,7 @@ class TestPullOwners:
         monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
         monkeypatch.setenv("METSUKE_PULL_OWNERS", "josui")
         config_mod._config = None
-        monkeypatch.setattr(scheduler.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient())
+        monkeypatch.setattr(scheduler.httpx, "AsyncClient", recording_client)
         await upsert_definition("weekend", "gather it")
         result = await trigger_report("weekend")
         assert result["dispatched"] is True
@@ -368,14 +381,14 @@ class TestPullOwners:
         config_mod._config = None
         monkeypatch.setattr(scheduler, "_is_due", lambda *_a: True)
         db_mod.upsert_definition("r", "the prompt", "josui", "0 9 * * 6", "UTC", None)
-        _FakeClient.posted.clear()
+        Dispatched.posted.clear()
         await scheduler._tick(
             in_memory_db,
             config_mod.get_config(),
-            cast("httpx.AsyncClient", _FakeClient()),
+            recording_client(),
             datetime.now(UTC),
         )
-        assert _FakeClient.posted == []
+        assert Dispatched.posted == []
         (row,) = db_mod.list_scheduled(in_memory_db)
         assert row["last_fired_at"] is not None
         rows = await list_outputs("r")
@@ -638,12 +651,10 @@ class TestScheduledCallbackSpec:
         monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
         monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
         config_mod._config = None
-        _FakeClient.posted.clear()
+        Dispatched.posted.clear()
         spec = scheduler.GatherSpec(gather_prompt="p", source_config=None)
-        await scheduler._post_alert(
-            cast("httpx.AsyncClient", _FakeClient()), config_mod.get_config(), "r", "r@1", spec
-        )
-        assert _FakeClient.posted[-1]["source_config"] == "{}"
+        await scheduler._post_alert(recording_client(), config_mod.get_config(), "r", "r@1", spec)
+        assert Dispatched.posted[-1]["source_config"] == "{}"
 
     @pytest.mark.asyncio
     async def test_post_alert_without_spec_is_unchanged(
@@ -652,12 +663,12 @@ class TestScheduledCallbackSpec:
         monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
         monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
         config_mod._config = None
-        _FakeClient.posted.clear()
-        client = _FakeClient()
+        Dispatched.posted.clear()
+        client = recording_client()
         await scheduler._post_alert(
             cast("httpx.AsyncClient", client), config_mod.get_config(), "r", "r@1"
         )
-        assert _FakeClient.posted[-1] == {"report": "r", "run_id": "r@1"}
+        assert Dispatched.posted[-1] == {"report": "r", "run_id": "r@1"}
 
     @pytest.mark.asyncio
     async def test_the_token_is_a_header_not_in_the_url(
@@ -667,13 +678,14 @@ class TestScheduledCallbackSpec:
         monkeypatch.setenv("TRENTINA_ALERT_URL", "http://trentina:8019")
         monkeypatch.setenv("METSUKE_ALERT_TOKEN", "test-token")
         config_mod._config = None
-        _FakeClient.sent.clear()
-        await scheduler._post_alert(
-            cast("httpx.AsyncClient", _FakeClient()), config_mod.get_config(), "r", "r@1"
-        )
-        url, headers = _FakeClient.sent[-1]
+        Dispatched.sent.clear()
+        await scheduler._post_alert(recording_client(), config_mod.get_config(), "r", "r@1")
+        url, headers = Dispatched.sent[-1]
         assert url == "http://trentina:8019/alert"
-        assert headers == {"Authorization": "Bearer test-token"}
+        # Real request headers now, so the test names what it is about rather
+        # than enumerating httpx's own `accept`, `connection` and the rest.
+        assert headers["authorization"] == "Bearer test-token"
+        assert "test-token" not in url
 
     @pytest.mark.asyncio
     async def test_scheduled_tick_sends_spec(
@@ -687,14 +699,14 @@ class TestScheduledCallbackSpec:
         config_mod._config = None
         monkeypatch.setattr(scheduler, "_is_due", lambda *_a: True)
         db.upsert_definition("r", "the prompt", "kagetora", "0 9 * * 6", "UTC", {"k": 1})
-        _FakeClient.posted.clear()
+        Dispatched.posted.clear()
         await scheduler._tick(
             in_memory_db,
             config_mod.get_config(),
-            cast("httpx.AsyncClient", _FakeClient()),
+            recording_client(),
             datetime.now(UTC),
         )
-        body = _FakeClient.posted[-1]
+        body = Dispatched.posted[-1]
         assert body["report"] == "r"
         assert cast("str", body["run_id"]).startswith("r@")
         assert body["gather_prompt"] == "the prompt"
