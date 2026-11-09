@@ -105,9 +105,16 @@ def _safe_url(url: httpx.URL) -> str:
     What survives is what makes a failed callback diagnosable: which host
     answered, over which scheme, for which endpoint.
     """
+    # Built from the host and port rather than from `url.netloc`. httpx
+    # documents netloc as host[:port] and excludes userinfo from it, but
+    # `urllib.parse`'s netloc of the same name INCLUDES userinfo, so a reader
+    # cannot tell by looking which one this is -- and the thing being built
+    # here is the string that must not contain a credential.
+    host = f"[{url.host}]" if ":" in url.host else url.host
+    authority = host if url.port is None else f"{host}:{url.port}"
     tail = url.path.rsplit("/", 1)[-1]
     prefix = ELIDED_PATH if url.path.strip("/").count("/") else "/"
-    return f"{url.scheme}://{url.netloc.decode()}{prefix}{tail}"
+    return f"{url.scheme}://{authority}{prefix}{tail}"
 
 
 def _body_snippet(body: bytes) -> str:

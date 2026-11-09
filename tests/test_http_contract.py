@@ -274,6 +274,23 @@ class TestTheNamedUrlCarriesNoCredential:
         assert "trentina:8019" in message
         assert "alert" in message
 
+    def test_the_authority_is_built_from_host_and_port(self) -> None:
+        """Not from `netloc`: the same name includes userinfo in `urllib.parse`."""
+        shown = scheduler._safe_url(httpx.URL("http://alice:letmein@trentina:8019/alert"))
+
+        assert shown == "http://trentina:8019/alert"
+
+    def test_an_ipv6_host_keeps_its_brackets(self) -> None:
+        """Building an authority by hand is where an IPv6 literal gets dropped."""
+        shown = scheduler._safe_url(httpx.URL("http://[::1]:8019/alert"))
+
+        assert shown == "http://[::1]:8019/alert"
+
+    def test_a_default_port_is_not_invented(self) -> None:
+        shown = scheduler._safe_url(httpx.URL("https://trentina.example.com/alert"))
+
+        assert shown == "https://trentina.example.com/alert"
+
     @pytest.mark.asyncio
     async def test_a_transport_failure_redacts_it_too(
         self, monkeypatch: pytest.MonkeyPatch
