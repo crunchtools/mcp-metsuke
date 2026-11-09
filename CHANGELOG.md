@@ -35,12 +35,20 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
   userinfo is dropped and every query *value* is replaced rather than the URL
   being left out.
 
-  Every value, not the credential-shaped names: the fleet's other clients
-  redact by name because they build their URLs against a known API and so know
-  which parameters are credentials. This one does not, so a list could only
-  ever cover the names somebody thought of — not `api_key`, `client_secret` or
-  `X-Amz-Signature`. The scheme, host, path and parameter names all survive,
-  which is what keeps the error diagnosable.
+  The query, the fragment and the configured path segments all go, not a list
+  of credential-shaped parameter names: the fleet's other clients redact by
+  name because they build their URLs against a known API and so know which
+  parameters are credentials. This one knows nothing about its URL beyond the
+  segment it appends — a by-name list misses `api_key` and `client_secret`, and
+  a webhook URL whose *path* is the credential is an ordinary pattern. What
+  survives is the scheme, the host and the endpoint name, which is what makes a
+  failed callback diagnosable.
+
+- **`/alert` goes in the path.** It was concatenated onto the configured
+  string, so it landed wherever that string happened to end: an alert URL with
+  a query made the endpoint `?...=.../alert` and the request went to `/`,
+  silently. It is now placed in the path, which also leaves a configured query
+  string intact on the request.
 
 ### Added
 

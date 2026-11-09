@@ -239,32 +239,40 @@ class TestTheNamedUrlCarriesNoCredential:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "name",
-        ["token", "api_key", "client_secret", "X-Amz-Signature", "anything_at_all"],
+        "configured",
+        [
+            "http://trentina:8019?token=the-secret",
+            "http://trentina:8019?api_key=the-secret",
+            "http://trentina:8019?anything_at_all=the-secret",
+            "http://trentina:8019/services/the-secret",
+            "http://trentina:8019#the-secret",
+        ],
     )
-    async def test_every_query_value_is_redacted_whatever_it_is_called(
-        self, name: str, monkeypatch: pytest.MonkeyPatch
+    async def test_nothing_a_configured_url_can_hide_a_secret_in_survives(
+        self, configured: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No list of credential names: this URL's parameters are not ours to know.
+        """Not a list of credential names: this URL's parts are not ours to know.
 
-        The first three are the names a by-name list misses, which is how this
-        was found. The last one is the point: a config-supplied URL has no
-        known parameter vocabulary, so the policy cannot be a list.
+        A by-name query list was the first version of this and it was wrong --
+        it misses `api_key` and `client_secret`, and a webhook URL whose PATH
+        is the credential is an ordinary pattern. So the query, the fragment
+        and the configured path segments all go.
         """
 
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(502, headers={"content-type": "text/html"}, text="bad gateway")
 
         with _serving(handler, monkeypatch) as client:
-            monkeypatch.setenv("TRENTINA_ALERT_URL", f"http://trentina:8019?{name}=the-secret")
+            monkeypatch.setenv("TRENTINA_ALERT_URL", configured)
             config_mod._config = None
             with pytest.raises(CallbackDispatchError) as caught:
                 await _fire(client)
 
         message = str(caught.value)
         assert "the-secret" not in message
-        # The name survives, which is what keeps the error diagnosable.
-        assert name in message
+        # The host and the endpoint survive, which is what makes it diagnosable.
+        assert "trentina:8019" in message
+        assert "alert" in message
 
     @pytest.mark.asyncio
     async def test_a_transport_failure_redacts_it_too(

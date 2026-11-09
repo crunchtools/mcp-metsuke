@@ -83,28 +83,31 @@ class _OversizedResponseError(Exception):
     """
 
 
-REDACTED = "***"
+ELIDED_PATH = "/.../"
 
 
-def _safe_url(url: httpx.URL) -> httpx.URL:
-    """The URL as it can be shown: no userinfo, and no query values at all.
+def _safe_url(url: httpx.URL) -> str:
+    """Where the request went, with nothing that could be a credential.
 
-    Every value goes, rather than the credential-shaped names. The fleet's
-    other clients redact by name because they BUILD their URLs against a known
-    API, so they know which parameters are credentials. This one does not: the
-    alert URL comes from `TRENTINA_ALERT_URL`, so its query string is whatever
-    an operator put there, and a list of names can only ever cover the
-    credentials somebody thought of -- not `api_key`, `client_secret` or
-    `X-Amz-Signature`.
+    Scheme, host, port, and the final path segment -- the one this module
+    appends -- and nothing else. Everything a configured URL can hide a secret
+    in is dropped: userinfo, the query, the fragment, and the path segments
+    that came from configuration.
 
-    Redacting a value that was not a secret costs a reader nothing: the scheme,
-    host, path and parameter NAMES are what make the error diagnosable, and
-    those all survive.
+    The fleet's other clients redact query parameters by name, because they
+    build their URLs against a known API and so know which parameters are
+    credentials. This one knows nothing about its URL beyond the segment it
+    adds: `TRENTINA_ALERT_URL` is whatever an operator configured, and a
+    webhook URL whose PATH is the credential is an ordinary pattern (Slack's
+    `/services/T.../B.../xxxx`). So the path is not shown merely because it is
+    usually boring.
+
+    What survives is what makes a failed callback diagnosable: which host
+    answered, over which scheme, for which endpoint.
     """
-    url = url.copy_with(userinfo=b"")
-    for name in set(url.params):
-        url = url.copy_set_param(name, REDACTED)
-    return url
+    tail = url.path.rsplit("/", 1)[-1]
+    prefix = ELIDED_PATH if url.path.strip("/").count("/") else "/"
+    return f"{url.scheme}://{url.netloc.decode()}{prefix}{tail}"
 
 
 def _body_snippet(body: bytes) -> str:
@@ -222,7 +225,11 @@ async def _post_alert(
     # The token rides in a header, never the URL: every access log on the way
     # records the request line, and httpx names the URL in the error text that
     # CallbackDispatchError carries (Trentina #333).
-    url = f"{cfg.trentina_alert_url}/alert"
+    # `/alert` goes in the PATH. Concatenating it onto the configured string
+    # put it wherever the string happened to end: a URL with a query made the
+    # endpoint `?...=.../alert` and the request went to `/`, silently.
+    configured = httpx.URL(cfg.trentina_alert_url)
+    url = str(configured.copy_with(path=configured.path.rstrip("/") + "/alert"))
     headers = {"Authorization": f"Bearer {token.get_secret_value()}"}
     body: dict[str, str] = {"report": name}
     if run_id is not None:
