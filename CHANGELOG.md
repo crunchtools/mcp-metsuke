@@ -32,8 +32,15 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 - **The named URL carries no credential.** The alert URL comes from
   configuration, so it can hold whatever an operator put in it — userinfo, or a
   signed query parameter. Naming it in an error is the point of the change, so
-  userinfo is dropped and credential-shaped query parameters are replaced
-  rather than the URL being left out.
+  userinfo is dropped and every query *value* is replaced rather than the URL
+  being left out.
+
+  Every value, not the credential-shaped names: the fleet's other clients
+  redact by name because they build their URLs against a known API and so know
+  which parameters are credentials. This one does not, so a list could only
+  ever cover the names somebody thought of — not `api_key`, `client_secret` or
+  `X-Amz-Signature`. The scheme, host, path and parameter names all survive,
+  which is what keeps the error diagnosable.
 
 ### Added
 

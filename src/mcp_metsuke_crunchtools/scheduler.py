@@ -83,18 +83,27 @@ class _OversizedResponseError(Exception):
     """
 
 
-# The alert URL comes from configuration, so it can carry whatever an operator
-# put in it: userinfo, or a signed query parameter. Naming it in an error is the
-# point of the third MUST, so these come out of it rather than the URL being
-# left out.
-REDACTED_PARAMS = frozenset({"access_token", "auth", "key", "password", "sig", "token"})
+REDACTED = "***"
 
 
 def _safe_url(url: httpx.URL) -> httpx.URL:
-    """The URL as it can be shown: no userinfo, no credential query values."""
+    """The URL as it can be shown: no userinfo, and no query values at all.
+
+    Every value goes, rather than the credential-shaped names. The fleet's
+    other clients redact by name because they BUILD their URLs against a known
+    API, so they know which parameters are credentials. This one does not: the
+    alert URL comes from `TRENTINA_ALERT_URL`, so its query string is whatever
+    an operator put there, and a list of names can only ever cover the
+    credentials somebody thought of -- not `api_key`, `client_secret` or
+    `X-Amz-Signature`.
+
+    Redacting a value that was not a secret costs a reader nothing: the scheme,
+    host, path and parameter NAMES are what make the error diagnosable, and
+    those all survive.
+    """
     url = url.copy_with(userinfo=b"")
-    for name in REDACTED_PARAMS & set(url.params):
-        url = url.copy_set_param(name, "***")
+    for name in set(url.params):
+        url = url.copy_set_param(name, REDACTED)
     return url
 
 

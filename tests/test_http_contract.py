@@ -238,11 +238,19 @@ class TestTheNamedUrlCarriesNoCredential:
         assert "letmein" not in str(caught.value)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", sorted(scheduler.REDACTED_PARAMS))
-    async def test_every_credential_shaped_parameter_is_redacted(
+    @pytest.mark.parametrize(
+        "name",
+        ["token", "api_key", "client_secret", "X-Amz-Signature", "anything_at_all"],
+    )
+    async def test_every_query_value_is_redacted_whatever_it_is_called(
         self, name: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """One case per name, so the set cannot grow an unredacted member."""
+        """No list of credential names: this URL's parameters are not ours to know.
+
+        The first three are the names a by-name list misses, which is how this
+        was found. The last one is the point: a config-supplied URL has no
+        known parameter vocabulary, so the policy cannot be a list.
+        """
 
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(502, headers={"content-type": "text/html"}, text="bad gateway")
@@ -253,7 +261,10 @@ class TestTheNamedUrlCarriesNoCredential:
             with pytest.raises(CallbackDispatchError) as caught:
                 await _fire(client)
 
-        assert "the-secret" not in str(caught.value)
+        message = str(caught.value)
+        assert "the-secret" not in message
+        # The name survives, which is what keeps the error diagnosable.
+        assert name in message
 
     @pytest.mark.asyncio
     async def test_a_transport_failure_redacts_it_too(
