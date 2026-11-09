@@ -83,6 +83,21 @@ class _OversizedResponseError(Exception):
     """
 
 
+# The alert URL comes from configuration, so it can carry whatever an operator
+# put in it: userinfo, or a signed query parameter. Naming it in an error is the
+# point of the third MUST, so these come out of it rather than the URL being
+# left out.
+REDACTED_PARAMS = frozenset({"access_token", "auth", "key", "password", "sig", "token"})
+
+
+def _safe_url(url: httpx.URL) -> httpx.URL:
+    """The URL as it can be shown: no userinfo, no credential query values."""
+    url = url.copy_with(userinfo=b"")
+    for name in REDACTED_PARAMS & set(url.params):
+        url = url.copy_set_param(name, "***")
+    return url
+
+
 def _body_snippet(body: bytes) -> str:
     """A short, single-line excerpt of a response body, for an error message."""
     prefix = body[: BODY_SNIPPET_CHARS * 4]
@@ -102,7 +117,7 @@ def _where(response: httpx.Response) -> str:
     bare status code cannot describe.
     """
     return (
-        f"{response.request.method} {response.request.url} "
+        f"{response.request.method} {_safe_url(response.request.url)} "
         f"(HTTP {response.status_code}, "
         f"{response.headers.get('content-type', 'no content-type')})"
     )
@@ -221,7 +236,7 @@ async def _post_alert(
     except _OversizedResponseError as exc:
         raise CallbackDispatchError(name, str(exc)) from exc
     except httpx.HTTPError as exc:
-        raise CallbackDispatchError(name, f"POST {url}: {exc}") from exc
+        raise CallbackDispatchError(name, f"POST {_safe_url(httpx.URL(url))}: {exc}") from exc
     if not resp.is_success:
         raise CallbackDispatchError(name, f"{_where(resp)} returned {_body_snippet(payload)}")
     return resp.status_code

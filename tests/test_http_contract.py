@@ -221,6 +221,60 @@ class TestErrorNamesTheSite:
         assert "test-token" not in str(caught.value)
 
 
+class TestTheNamedUrlCarriesNoCredential:
+    """The alert URL comes from configuration, so it can carry anything."""
+
+    @pytest.mark.asyncio
+    async def test_userinfo_is_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(502, headers={"content-type": "text/html"}, text="bad gateway")
+
+        with _serving(handler, monkeypatch) as client:
+            monkeypatch.setenv("TRENTINA_ALERT_URL", "http://alice:letmein@trentina:8019")
+            config_mod._config = None
+            with pytest.raises(CallbackDispatchError) as caught:
+                await _fire(client)
+
+        assert "letmein" not in str(caught.value)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", sorted(scheduler.REDACTED_PARAMS))
+    async def test_every_credential_shaped_parameter_is_redacted(
+        self, name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One case per name, so the set cannot grow an unredacted member."""
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(502, headers={"content-type": "text/html"}, text="bad gateway")
+
+        with _serving(handler, monkeypatch) as client:
+            monkeypatch.setenv("TRENTINA_ALERT_URL", f"http://trentina:8019?{name}=the-secret")
+            config_mod._config = None
+            with pytest.raises(CallbackDispatchError) as caught:
+                await _fire(client)
+
+        assert "the-secret" not in str(caught.value)
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_redacts_it_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The path with no response to read the URL off, so it builds its own."""
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("no route")
+
+        with _serving(handler, monkeypatch) as client:
+            monkeypatch.setenv("TRENTINA_ALERT_URL", "http://alice:letmein@trentina:8019")
+            config_mod._config = None
+            with pytest.raises(CallbackDispatchError) as caught:
+                await _fire(client)
+
+        message = str(caught.value)
+        assert "letmein" not in message
+        assert "trentina:8019/alert" in message
+
+
 class TestTransportFailuresNameTheRequest:
     """A timeout with no endpoint in it is the hardest failure to place."""
 
