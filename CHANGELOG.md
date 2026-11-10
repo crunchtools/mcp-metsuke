@@ -8,6 +8,20 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-11-10
+
+### Fixed
+
+- The container installed its dependencies with `pip install .`, which reads
+  only `pyproject.toml`'s floor-pins and resolves fresh at build time instead
+  of installing the committed, Dependabot-maintained `uv.lock`. That let the
+  shipped image carry a dependency set no test had ever run against — the same
+  bug that took mcp-gemini down in production (`google-genai` 3.0.0 shipped
+  vs. 2.34.0 CI actually tested; RT #1564). A new `lock` stage runs
+  `uv export --frozen` to turn `uv.lock` into a requirements file, and both the
+  locked requirements and the project itself install with `--no-deps` so pip
+  cannot re-resolve anything the lock already decided.
+
 ## [3.6.0] - 2026-11-09
 
 ### Fixed
