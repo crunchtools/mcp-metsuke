@@ -8,6 +8,26 @@ Entries prior to 2026-09-19 are back-filled from GitHub Release notes (RT #1484)
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-11-14
+
+### Added
+
+- Four source-reader collectors for activity reports (spec 004):
+  `gmail_search` (a plain Gmail query, no ownership filtering),
+  `slack_search` (a paged `slack_search_messages` query with `{date}`
+  templating and author names), `docs_search` (Google Docs modified in the
+  window via `search_drive_files`) and `workboard_objectives` (objectives and
+  key results). Flagged results keep metadata and withhold free text.
+- `calendar_day` options `lookback_days` (past events as `past_meeting` /
+  `past_all_day`) and `responses` (keep only accepted/tentative/needsAction
+  as listed). Defaults leave the daily-briefing output unchanged.
+- `jira_issues` option `probe_key`: a backend that cannot return a known
+  issue makes the section `error` instead of "ok, 0 records".
+
+### Security
+
+- dnspython 2.9.1 → 2.9.2 (CVE-2026-128089, flagged by pip-audit).
+
 ## [3.6.1] - 2026-11-10
 
 ### Fixed

@@ -56,6 +56,8 @@ DEFAULT_MAX_CONVERSATIONS = 40
 MAX_CONVERSATIONS = 100
 MAX_NAME_LOOKUPS = 50
 UNKNOWN_PERSON = "unknown person"
+DEFAULT_SLACK_SEARCH_MESSAGES = 60
+MAX_SLACK_TEXT_CHARS = 2000
 
 # Gmail
 GMAIL_SEARCH_PAGE_SIZE = 25
@@ -72,6 +74,8 @@ MAX_PRIORITY_SENDER_LENGTH = 100
 DEFAULT_LOOKAHEAD_DAYS = 3
 MAX_LOOKAHEAD_DAYS = 14
 CALENDAR_MAX_RESULTS = 100
+CALENDAR_RESPONSES = ("accepted", "tentative", "needsAction")
+CalendarResponse = Literal["accepted", "tentative", "needsAction"]
 # Free text in a parsed event, all withheld when Trentina flags the result.
 FREE_TEXT_EVENT_FIELDS = (
     "title",
@@ -96,6 +100,15 @@ JIRA_FIELDS_NO_DESCRIPTION = JIRA_FIELDS.removesuffix(",description")
 JIRA_CONTACT_FIELDS = ("name", "email", "company")
 # Intake-form fields worth a line in the briefing, in the order they read best.
 JIRA_DETAIL_FIELDS = ("image name", "version", "purpose", "page url", "description")
+
+# Drive / Docs
+DRIVE_PAGE_SIZE = 25
+DEFAULT_MAX_DOCS = 50
+MAX_DOCS = 100
+
+# WorkBoard (mcp-workboard accepts at most 25 objective ids)
+MAX_WORKBOARD_OBJECTIVES = 25
+MAX_WORKBOARD_RECORDS = 150
 
 # Feeds
 MAX_FEED_CATEGORIES = 12
@@ -235,12 +248,24 @@ async def _search_conversations(
                 break
             for match in payload.get("matches") or []:
                 _add_match(conversations, match, opts.user_id)
-            page_count = int((payload.get("pagination") or {}).get("page_count") or 1)
+            page_count = _page_count(payload, 1)
             if page >= page_count:
                 break
             if page == MAX_PAGES:
                 section["stats"]["search_pages_truncated"] = True
     return conversations
+
+
+def _page_count(payload: Any, default: int) -> int:
+    """A Slack search's ``pagination.page_count``, or ``default`` when absent or malformed."""
+    pagination = payload.get("pagination") if isinstance(payload, dict) else None
+    count = pagination.get("page_count") if isinstance(pagination, dict) else None
+    if isinstance(count, bool):
+        return default
+    try:
+        return int(count) if count and int(count) > 0 else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _add_match(
@@ -445,11 +470,17 @@ def _user_ids(records: list[dict[str, Any]], self_id: str) -> list[str]:
 async def _resolve_names(
     gw: Gateway, opts: SlackOptions, records: list[dict[str, Any]], section: dict[str, Any]
 ) -> dict[str, str]:
+    return await _lookup_names(gw, opts.backend, _user_ids(records, opts.user_id), section)
+
+
+async def _lookup_names(
+    gw: Gateway, backend: str, ids: list[str], section: dict[str, Any]
+) -> dict[str, str]:
+    """Display names for Slack user IDs, one call each, capped at ``MAX_NAME_LOOKUPS``."""
     names: dict[str, str] = {}
-    ids = _user_ids(records, opts.user_id)
     section["stats"]["name_lookups_skipped"] = max(0, len(ids) - MAX_NAME_LOOKUPS)
     for uid in ids[:MAX_NAME_LOOKUPS]:
-        res = await gw.call(opts.backend, "slack_get_user_info", {"user_id": uid})
+        res = await gw.call(backend, "slack_get_user_info", {"user_id": uid})
         if not res.ok:
             _note_error(section, f"user {uid}", res)
             continue
@@ -536,7 +567,10 @@ async def gmail_waiting(
     section = _section("gmail_waiting")
     if opts.lookback_days is not None:
         window = Window(start=now - timedelta(days=opts.lookback_days), end=window.end)
-    thread_ids = await _search_threads(gw, opts, window, section)
+    query = f"in:inbox after:{window.start:%Y/%m/%d} {opts.query_extra}".strip()
+    thread_ids = await _search_threads(
+        gw, opts.backend, opts.account, query, opts.max_threads, section
+    )
 
     stats = section["stats"]
     stats.update(
@@ -566,20 +600,25 @@ async def gmail_waiting(
 
 
 async def _search_threads(
-    gw: Gateway, opts: GmailOptions, window: Window, section: dict[str, Any]
+    gw: Gateway,
+    backend: str,
+    account: str,
+    query: str,
+    max_threads: int,
+    section: dict[str, Any],
 ) -> list[str]:
-    query = f"in:inbox after:{window.start:%Y/%m/%d} {opts.query_extra}".strip()
+    """Thread IDs matching a Gmail query, paged until ``max_threads`` or ``MAX_PAGES``."""
     thread_ids: list[str] = []
     token: str | None = None
     for page in range(1, MAX_PAGES + 1):
         args: dict[str, Any] = {
             "query": query,
-            "user_google_email": opts.account,
+            "user_google_email": account,
             "page_size": GMAIL_SEARCH_PAGE_SIZE,
         }
         if token:
             args["page_token"] = token
-        res = await gw.call(opts.backend, "search_gmail_messages", args)
+        res = await gw.call(backend, "search_gmail_messages", args)
         if not res.ok:
             _note_error(section, f"search p{page}", res)
             break
@@ -588,7 +627,7 @@ async def _search_threads(
         thread_ids += [t for t in page_ids if t not in thread_ids]
         if not token:
             break
-        if len(thread_ids) >= opts.max_threads or page == MAX_PAGES:
+        if len(thread_ids) >= max_threads or page == MAX_PAGES:
             # More results exist than will be read: say so.
             section["stats"]["search_pages_truncated"] = True
             break
@@ -690,17 +729,38 @@ class CalendarOptions(BaseModel, extra="forbid"):
     account: str = Field(..., min_length=3, max_length=MAX_ACCOUNT_LENGTH)
     timezone: str = Field(default="America/New_York", min_length=1, max_length=MAX_TZ_LENGTH)
     lookahead_days: int = Field(default=DEFAULT_LOOKAHEAD_DAYS, ge=0, le=MAX_LOOKAHEAD_DAYS)
+    # Also read this many days before the report day; those events are past_*.
+    lookback_days: int = Field(default=0, ge=0, le=MAX_LOOKBACK_DAYS)
+    # Keep only events the user answered this way; None keeps every non-declined one.
+    responses: list[CalendarResponse] | None = Field(
+        default=None, min_length=1, max_length=len(CALENDAR_RESPONSES)
+    )
 
     _check_timezone = field_validator("timezone")(valid_zone)
 
 
-def _event_kind(event: dict[str, Any], day0: datetime) -> str | None:
-    """meeting / pending_invite / all_day, or None to drop (declined, other days)."""
+def _past_kind(event: dict[str, Any], start_day: date, first_day: date | None) -> str | None:
+    """past_meeting / past_all_day for an answered event inside the lookback, else None."""
+    if first_day is None or start_day < first_day or event["my_status"] == "needsAction":
+        return None
+    return "past_all_day" if event["all_day"] else "past_meeting"
+
+
+def _event_kind(event: dict[str, Any], day0: datetime, first_day: date | None = None) -> str | None:
+    """meeting / pending_invite / all_day / past_meeting / past_all_day, or None to drop.
+
+    Declined events are always dropped. Events starting before the report day
+    are ``past_*`` only when they start on or after ``first_day`` (the
+    lookback's first day); without a lookback they are dropped, as are
+    events that merely overlap the start of the read.
+    """
     start = parsers.event_start(event)
     status = event["my_status"]
     if status == "declined" or start is None:
         return None
     start_day = _local_day(start, day0)
+    if start_day < day0.date():
+        return _past_kind(event, start_day, first_day)
     on_day0 = start_day == day0.date()
     if on_day0 and event["all_day"]:
         return "all_day"
@@ -728,17 +788,24 @@ async def calendar_day(
     events are dropped. Records carry ``kind``: ``meeting`` (report day,
     accepted/tentative/organizer), ``pending_invite`` (needsAction within the
     lookahead), or ``all_day``.
+
+    ``lookback_days`` widens the read to that many days before the report day;
+    those events come back as ``past_meeting`` / ``past_all_day`` (needsAction
+    ones are dropped: an unanswered invite in the past is not a meeting held).
+    ``responses`` keeps only events the user answered that way, e.g.
+    ``["accepted", "tentative"]``. Both default to the daily-briefing shape.
     """
     opts = CalendarOptions(**options)
     section = _section("calendar_day")
     day0 = next_weekday(now, opts.timezone)
     horizon = day0 + timedelta(days=opts.lookahead_days + 1)
+    time_min = day0 - timedelta(days=opts.lookback_days)
     res = await gw.call(
         opts.backend,
         "get_events",
         {
             "user_google_email": opts.account,
-            "time_min": day0.isoformat(),
+            "time_min": time_min.isoformat(),
             "time_max": horizon.isoformat(),
             "detailed": True,
             "max_results": CALENDAR_MAX_RESULTS,
@@ -750,9 +817,12 @@ async def calendar_day(
     _count_ok(section)
     section["stats"]["report_day"] = day0.date().isoformat()
     same_day: list[dict[str, Any]] = []
+    if opts.lookback_days:
+        section["stats"]["lookback_from"] = time_min.date().isoformat()
     for event in parsers.calendar_events(res.text, opts.account):
-        kind = _event_kind(event, day0)
-        if kind is None:
+        kind = _event_kind(event, day0, time_min.date() if opts.lookback_days else None)
+        unwanted = opts.responses is not None and event["my_status"] not in opts.responses
+        if kind is None or unwanted:
             continue
         record = {"kind": kind, **event, "flagged": res.flagged}
         if res.flagged:
@@ -883,6 +953,30 @@ class JiraOptions(BaseModel, extra="forbid"):
     backend: str = Field(default="jira", min_length=1, max_length=MAX_BACKEND_NAME)
     browse_url: str = Field(default="https://redhat.atlassian.net/browse/", max_length=200)
     detail_chars: int = Field(default=DEFAULT_JIRA_DETAIL_CHARS, ge=0, le=MAX_JIRA_DETAIL_CHARS)
+    # A key known to exist: if the backend cannot return it, the section is an
+    # error instead of "ok, nothing new".
+    probe_key: str | None = Field(default=None, max_length=32, pattern=r"^[A-Z][A-Z0-9_]+-\d+$")
+
+
+async def _jira_probe(gw: Gateway, opts: JiraOptions, key: str, section: dict[str, Any]) -> bool:
+    """Whether the backend returns a known issue; a False answer is recorded as an error."""
+    res = await gw.call(
+        opts.backend, "jira_search", {"jql": f"key = {key}", "limit": 1, "fields": "status"}
+    )
+    if not res.ok:
+        _note_error(section, f"probe {key}", res)
+        return False
+    try:
+        payload = res.json() if res.text.strip() else []
+    except ValueError:
+        _note_error(section, f"probe {key}", _bad_json(res))
+        return False
+    if not parsers.listed_dicts(payload, "issues"):
+        missing = f"jira backend returned nothing for known key {key}"
+        _note_error(section, f"probe {key}", GatewayResult(text="", error=missing))
+        return False
+    _count_ok(section)
+    return True
 
 
 def _jira_created(value: Any) -> datetime | None:
@@ -938,11 +1032,19 @@ async def jira_issues(
     on the request page put the reporter's name, address and technical specs
     in the description, so a flagged result withholds ``summary``, ``detail``
     and ``contact`` and keeps only the key, link, status and dates (``created``, ``updated``).
+
+    ``probe_key`` first fetches an issue known to exist. A backend that cannot
+    return it (an error, or an empty result such as ``total: -1``) is broken,
+    not quiet: the queries are skipped and the section is ``error``, so a
+    report never reads "0 new tickets" off a dead connection.
     """
     opts = JiraOptions(**options)
     section = _section("jira_issues")
     since = window.start.strftime("%Y-%m-%d %H:%M")
     section["stats"]["since"] = since
+    if opts.probe_key and not await _jira_probe(gw, opts, opts.probe_key, section):
+        section["status"] = "error"
+        return section
     for query in opts.queries:
         res = await gw.call(
             opts.backend,
@@ -963,7 +1065,7 @@ async def jira_issues(
             _note_error(section, f"query {query.label}", _bad_json(res))
             continue
         room = MAX_JIRA_RECORDS - len(section["records"])
-        for issue in parsers.jira_search_issues(payload)[: max(0, room)]:
+        for issue in parsers.listed_dicts(payload, "issues")[: max(0, room)]:
             section["records"].append(_jira_record(issue, query.label, opts, now, res.flagged))
     return _finish(section)
 
@@ -1366,6 +1468,401 @@ async def crunchtools_releases(
     return _finish(section)
 
 
+# --- Source readers ------------------------------------------------------
+#
+# Plain reads with no "is anyone waiting" judgement: what the user sent, said,
+# wrote and committed to over a window, for reports that summarize activity.
+
+
+def _start(window: Window, now: datetime, lookback_days: int | None) -> datetime:
+    """The read's start: ``lookback_days`` before ``now``, or the report window's start."""
+    return now - timedelta(days=lookback_days) if lookback_days is not None else window.start
+
+
+class GmailSearchOptions(BaseModel, extra="forbid"):
+    """Options for the gmail_search collector."""
+
+    backend: str = Field(..., min_length=1, max_length=MAX_BACKEND_NAME)
+    account: str = Field(..., min_length=3, max_length=MAX_ACCOUNT_LENGTH)
+    # ``{window_start}`` becomes the read's start as a Gmail date (YYYY/MM/DD).
+    query: str = Field(..., min_length=1, max_length=MAX_QUERY_EXTRA)
+    lookback_days: int | None = Field(default=None, ge=1, le=MAX_LOOKBACK_DAYS)
+    max_threads: int = Field(default=DEFAULT_MAX_THREADS, ge=1, le=MAX_THREADS)
+    body_chars: int = Field(default=DEFAULT_BODY_CHARS, ge=0, le=MAX_BODY_CHARS)
+    link_template: str | None = Field(
+        default="https://mail.google.com/mail/u/0/#all/{thread_id}", max_length=200
+    )
+
+
+async def gmail_search(
+    gw: Gateway, window: Window, now: datetime, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Every thread a Gmail query matches, one record each, nothing dropped.
+
+    Unlike ``gmail_waiting`` there is no ownership, noise or age filtering:
+    ``in:sent after:{window_start}`` returns what the user sent. A flagged
+    thread keeps its id, link, dates, counts and sender address; its subject
+    and body are withheld.
+    """
+    opts = GmailSearchOptions(**options)
+    section = _section("gmail_search")
+    start = _start(window, now, opts.lookback_days)
+    query = opts.query.replace("{window_start}", f"{start:%Y/%m/%d}")
+    section["stats"]["query"] = query
+    thread_ids = await _search_threads(
+        gw, opts.backend, opts.account, query, opts.max_threads, section
+    )
+    section["stats"]["threads_found"] = len(thread_ids)
+    section["stats"]["truncated"] = max(0, len(thread_ids) - opts.max_threads)
+    for tid in thread_ids[: opts.max_threads]:
+        res = await gw.call(
+            opts.backend,
+            "get_gmail_thread_content",
+            {"thread_id": tid, "user_google_email": opts.account, "include_analysis": True},
+        )
+        if not res.ok:
+            _note_error(section, f"thread {tid}", res)
+            continue
+        _count_ok(section)
+        facts = parsers.gmail_thread_facts(*_thread_payload(res))
+        last_at: datetime | None = facts["last_at"]
+        section["records"].append(
+            {
+                "thread_id": tid,
+                "link": opts.link_template.format(thread_id=tid) if opts.link_template else None,
+                "subject": None if res.flagged else facts["subject"],
+                "from": parsers.email_address(facts["sender"]) if res.flagged else facts["sender"],
+                "last_at": last_at.isoformat() if last_at else None,
+                "age_days": _age_days(last_at, now) if last_at else None,
+                "message_count": facts["message_count"],
+                "participant_count": facts["participant_count"],
+                "flagged": res.flagged,
+                "body": None
+                if res.flagged or not opts.body_chars
+                else facts["body"][: opts.body_chars],
+            }
+        )
+    return _finish(section)
+
+
+class SlackSearchOptions(BaseModel, extra="forbid"):
+    """Options for the slack_search collector."""
+
+    backend: str = Field(default="slack", min_length=1, max_length=MAX_BACKEND_NAME)
+    # ``{date}`` becomes the day before the read's start, so ``after:{date}``
+    # (exclusive in Slack) includes the start day.
+    query: str = Field(..., min_length=1, max_length=MAX_QUERY_EXTRA)
+    lookback_days: int | None = Field(default=None, ge=1, le=MAX_LOOKBACK_DAYS)
+    max_messages: int = Field(
+        default=DEFAULT_SLACK_SEARCH_MESSAGES, ge=1, le=MAX_PAGES * SLACK_SEARCH_PAGE_SIZE
+    )
+    text_chars: int = Field(default=SLACK_ASK_CHARS, ge=0, le=MAX_SLACK_TEXT_CHARS)
+    resolve_names: bool = True
+    workspace_url: str = Field(
+        default="https://redhat-internal.slack.com", min_length=8, max_length=200
+    )
+
+
+def _slack_where(channel: dict[str, Any]) -> str:
+    """Where a search hit was posted: DM, group DM, #channel, or the bare channel id."""
+    match channel:
+        case {"is_im": True}:
+            return "DM"
+        case {"is_mpim": True}:
+            return "group DM"
+        case {"name": str(name)} if name:
+            return f"#{name}"
+        case _:
+            return str(channel.get("id") or "")
+
+
+def _slack_search_record(
+    match: dict[str, Any], opts: SlackSearchOptions, flagged: bool
+) -> dict[str, Any] | None:
+    channel = match.get("channel") or {}
+    ts = str(match.get("ts") or "")
+    if not channel.get("id") or not ts:
+        return None
+    try:
+        sent_at = datetime.fromtimestamp(float(ts), tz=UTC)
+    except (ValueError, OverflowError, OSError):
+        return None
+    _, thread_ts = parsers.slack_link_parts(match.get("permalink") or "")
+    return {
+        "where": _slack_where(channel),
+        "channel_id": channel["id"],
+        "_author": match.get("user"),
+        "_username": match.get("username"),
+        "ts": ts,
+        "sent_at": sent_at.isoformat(),
+        "link": match.get("permalink")
+        or parsers.slack_permalink(opts.workspace_url, channel["id"], ts, thread_ts),
+        "flagged": flagged,
+        "text": None
+        if flagged or not opts.text_chars
+        else (match.get("text") or "")[: opts.text_chars],
+    }
+
+
+async def slack_search(
+    gw: Gateway, window: Window, now: datetime, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Every Slack message a search query matches, one record each.
+
+    ``from:me after:{date}`` returns what the user said. Pages of
+    ``SLACK_SEARCH_PAGE_SIZE`` are read in order until a short page, the last
+    page, ``max_messages`` or ``MAX_PAGES``. Messages older than the read's
+    start (Slack's ``after:`` is day-granular) are dropped as
+    ``dropped_before_start``. Authors are resolved to names, one lookup per
+    distinct user. A flagged page's text is withheld; who, where and when stay.
+    """
+    opts = SlackSearchOptions(**options)
+    section = _section("slack_search")
+    start = _start(window, now, opts.lookback_days)
+    query = opts.query.replace("{date}", (start - timedelta(days=1)).date().isoformat())
+    section["stats"].update(query=query, dropped_before_start=0)
+    records = await _slack_search_pages(gw, opts, query, start, section)
+    section["stats"]["truncated"] = max(0, len(records) - opts.max_messages)
+    records = records[: opts.max_messages]
+    names: dict[str, str] = {}
+    if opts.resolve_names:
+        ids = list(dict.fromkeys(r["_author"] for r in records if r["_author"]))
+        names = await _lookup_names(gw, opts.backend, ids, section)
+    for record in records:
+        uid, username = record.pop("_author"), record.pop("_username")
+        record["author"] = names.get(uid or "") or username or UNKNOWN_PERSON
+    section["records"] = records
+    return _finish(section)
+
+
+async def _slack_search_pages(
+    gw: Gateway,
+    opts: SlackSearchOptions,
+    query: str,
+    start: datetime,
+    section: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Search records page by page, stopping at a short or last page or a cap."""
+    records: list[dict[str, Any]] = []
+    for page in range(1, MAX_PAGES + 1):
+        res = await gw.call(
+            opts.backend,
+            "slack_search_messages",
+            {
+                "query": query,
+                "count": SLACK_SEARCH_PAGE_SIZE,
+                "sort": "timestamp",
+                "sort_dir": "desc",
+                "page": page,
+            },
+        )
+        if not res.ok:
+            _note_error(section, f"search p{page}", res)
+            break
+        try:
+            payload = res.json()
+        except ValueError:
+            _note_error(section, f"search p{page}", _bad_json(res))
+            break
+        if not isinstance(payload, dict):
+            _note_error(section, f"search p{page}", _bad_json(res))
+            break
+        _count_ok(section)
+        matches = [m for m in payload.get("matches") or [] if isinstance(m, dict)]
+        for match in matches:
+            record = _slack_search_record(match, opts, res.flagged)
+            if record is None:
+                continue
+            if float(record["ts"]) < start.timestamp():
+                section["stats"]["dropped_before_start"] += 1
+                continue
+            records.append(record)
+        # No usable pagination block: keep reading until a short page.
+        page_count = _page_count(payload, MAX_PAGES)
+        if len(matches) < SLACK_SEARCH_PAGE_SIZE or page >= page_count:
+            break
+        if len(records) >= opts.max_messages or page == MAX_PAGES:
+            section["stats"]["search_pages_truncated"] = True
+            break
+    return records
+
+
+class DocsSearchOptions(BaseModel, extra="forbid"):
+    """Options for the docs_search collector."""
+
+    backend: str = Field(default="gw-work", min_length=1, max_length=MAX_BACKEND_NAME)
+    account: str = Field(..., min_length=3, max_length=MAX_ACCOUNT_LENGTH)
+    # More Drive query, ANDed on, e.g. "'me' in owners".
+    query_extra: str = Field(default="", max_length=MAX_QUERY_EXTRA)
+    lookback_days: int | None = Field(default=None, ge=1, le=MAX_LOOKBACK_DAYS)
+    max_docs: int = Field(default=DEFAULT_MAX_DOCS, ge=1, le=MAX_DOCS)
+    link_template: str = Field(
+        default="https://docs.google.com/document/d/{id}/edit", min_length=8, max_length=200
+    )
+
+
+async def docs_search(
+    gw: Gateway, window: Window, now: datetime, options: dict[str, Any]
+) -> dict[str, Any]:
+    """Google Docs modified since the read's start, newest first.
+
+    Calls workspace-mcp ``search_drive_files`` with a structured Drive query
+    (``modifiedTime > '…'``) restricted to Docs and ordered by
+    ``modifiedTime desc``; ``search_docs`` matches names only and cannot ask
+    for a date. Paged by ``nextPageToken`` up to ``MAX_PAGES``. A flagged
+    page's document names are withheld and editors reduced to an address.
+    """
+    opts = DocsSearchOptions(**options)
+    section = _section("docs_search")
+    start = _start(window, now, opts.lookback_days).astimezone(UTC)
+    query = f"modifiedTime > '{start:%Y-%m-%dT%H:%M:%S}'"
+    if opts.query_extra.strip():
+        query += f" and ({opts.query_extra.strip()})"
+    section["stats"]["query"] = query
+    token: str | None = None
+    for page in range(1, MAX_PAGES + 1):
+        args: dict[str, Any] = {
+            "user_google_email": opts.account,
+            "query": query,
+            "page_size": DRIVE_PAGE_SIZE,
+            "file_type": "document",
+            "order_by": "modifiedTime desc",
+        }
+        if token:
+            args["page_token"] = token
+        res = await gw.call(opts.backend, "search_drive_files", args)
+        if not res.ok:
+            _note_error(section, f"search p{page}", res)
+            break
+        _count_ok(section)
+        files, token = parsers.drive_files(res.text)
+        for doc in files:
+            editor = doc["last_edited_by"]
+            section["records"].append(
+                {
+                    "doc_id": doc["id"],
+                    "name": None if res.flagged else doc["name"],
+                    "modified": doc["modified"],
+                    "last_edited_by": parsers.email_address(editor) if res.flagged else editor,
+                    "link": opts.link_template.format(id=doc["id"]),
+                    "flagged": res.flagged,
+                }
+            )
+        if not token:
+            break
+        if len(section["records"]) >= opts.max_docs or page == MAX_PAGES:
+            section["stats"]["search_pages_truncated"] = True
+            break
+    section["stats"]["truncated"] = max(0, len(section["records"]) - opts.max_docs)
+    section["records"] = section["records"][: opts.max_docs]
+    return _finish(section)
+
+
+class WorkboardOptions(BaseModel, extra="forbid"):
+    """Options for the workboard_objectives collector."""
+
+    backend: str = Field(default="workboard", min_length=1, max_length=MAX_BACKEND_NAME)
+    # Fetch these objectives instead of the ones the user's key results point to.
+    objective_ids: list[int] | None = Field(
+        default=None, min_length=1, max_length=MAX_WORKBOARD_OBJECTIVES
+    )
+
+    @field_validator("objective_ids")
+    @classmethod
+    def _check_ids(cls, value: list[int] | None) -> list[int] | None:
+        if value is not None and any(oid < 1 for oid in value):
+            raise ValueError("objective_ids must be positive")
+        return value
+
+
+def _workboard_records(objective: dict[str, Any], flagged: bool) -> list[dict[str, Any]]:
+    """An objective and each of its key results, as records."""
+    head = {
+        "kind": "objective",
+        "objective_id": objective.get("objective_id"),
+        "key_result_id": None,
+        "name": None if flagged else objective.get("name"),
+        "progress": objective.get("progress"),
+        "status": objective.get("status_color"),
+        "owner": objective.get("owner"),
+        "team": None if flagged else objective.get("team"),
+        "dates": objective.get("dates"),
+        "target_date": None,
+        "last_updated": None,
+        "flagged": flagged,
+    }
+    records = [head]
+    for kr in objective.get("key_results") or []:
+        if not isinstance(kr, dict):
+            continue
+        records.append(
+            {
+                **head,
+                "kind": "key_result",
+                "key_result_id": kr.get("key_result_id"),
+                "name": None if flagged else kr.get("name"),
+                "progress": kr.get("progress"),
+                # WorkBoard colours objectives only; a key result's status is its progress.
+                "status": None,
+                "team": None,
+                "dates": None,
+                "target_date": kr.get("target_date") or None,
+                "last_updated": kr.get("last_updated"),
+            }
+        )
+    return records
+
+
+async def workboard_objectives(
+    gw: Gateway, _window: Window, _now: datetime, options: dict[str, Any]
+) -> dict[str, Any]:
+    """The user's WorkBoard objectives and key results, one record each.
+
+    One call to ``workboard_get_my_objectives_tool``. Each objective record
+    (``kind: objective``) is followed by its key results (``kind:
+    key_result``), which carry the objective's id and owner. Objectives the
+    server could not read are counted in ``stats.skipped``. Names are
+    withheld from a flagged result; ids, progress, status and owner stay.
+    """
+    opts = WorkboardOptions(**options)
+    section = _section("workboard_objectives")
+    args: dict[str, Any] = {}
+    if opts.objective_ids is not None:
+        args["objective_ids"] = opts.objective_ids
+    res = await gw.call(opts.backend, "workboard_get_my_objectives_tool", args)
+    if not res.ok:
+        _note_error(section, "objectives", res)
+        return _finish(section)
+    try:
+        payload = res.json()
+    except ValueError:
+        _note_error(section, "objectives", _bad_json(res))
+        return _finish(section)
+    if isinstance(payload, dict) and payload.get("error"):
+        # The server's own error string is not quoted: it is not judged text we control.
+        failed = GatewayResult(text="", error="backend reported an error")
+        _note_error(section, "objectives", failed)
+        return _finish(section)
+    _count_ok(section)
+    objectives = parsers.workboard_objectives(payload)
+    skipped = payload.get("skipped") if isinstance(payload, dict) else None
+    section["stats"].update(
+        objectives=len(objectives), skipped=len(skipped) if isinstance(skipped, list) else 0
+    )
+    truncated = 0
+    for objective in objectives:
+        room = MAX_WORKBOARD_RECORDS - len(section["records"])
+        if room <= 0:
+            # Count what is left without expanding it: one record plus its key results.
+            truncated += 1 + len(objective.get("key_results") or [])
+            continue
+        records = _workboard_records(objective, res.flagged)
+        section["records"].extend(records[:room])
+        truncated += max(0, len(records) - room)
+    section["stats"]["truncated"] = truncated
+    return _finish(section)
+
+
 CollectorName = Literal[
     "slack_waiting",
     "gmail_waiting",
@@ -1375,6 +1872,10 @@ CollectorName = Literal[
     "nagios_health",
     "ashigaru_issue",
     "crunchtools_releases",
+    "gmail_search",
+    "slack_search",
+    "docs_search",
+    "workboard_objectives",
 ]
 
 Collector = Callable[["Gateway", Window, datetime, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -1388,6 +1889,10 @@ COLLECTORS: dict[str, Collector] = {
     "nagios_health": nagios_health,
     "ashigaru_issue": ashigaru_issue,
     "crunchtools_releases": crunchtools_releases,
+    "gmail_search": gmail_search,
+    "slack_search": slack_search,
+    "docs_search": docs_search,
+    "workboard_objectives": workboard_objectives,
 }
 
 OPTION_MODELS: dict[str, type[BaseModel]] = {
@@ -1399,4 +1904,8 @@ OPTION_MODELS: dict[str, type[BaseModel]] = {
     "nagios_health": NagiosOptions,
     "ashigaru_issue": AshigaruOptions,
     "crunchtools_releases": ReleasesOptions,
+    "gmail_search": GmailSearchOptions,
+    "slack_search": SlackSearchOptions,
+    "docs_search": DocsSearchOptions,
+    "workboard_objectives": WorkboardOptions,
 }

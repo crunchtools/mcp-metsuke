@@ -421,15 +421,16 @@ def event_end(event: dict[str, Any]) -> datetime | None:
 _FORM_FIELD = re.compile(r"^[ \t]*(?P<name>[A-Za-z][A-Za-z /]{1,30}):[ \t]*(?P<value>\S.*)$", re.M)
 
 
-def jira_search_issues(payload: Any) -> list[dict[str, Any]]:
-    """The issue dicts of a jira_search result, tolerating a ``result`` wrapper."""
-    if isinstance(payload, dict) and "issues" not in payload:
+def listed_dicts(payload: Any, key: str) -> list[dict[str, Any]]:
+    """The dicts listed under ``key`` (``issues`` for jira_search, ``objectives`` for
+    WorkBoard), tolerating a ``result`` wrapper around the object."""
+    if isinstance(payload, dict) and key not in payload:
         payload = payload.get("result")
     if isinstance(payload, dict):
-        payload = payload.get("issues")
+        payload = payload.get(key)
     if not isinstance(payload, list):
         return []
-    return [issue for issue in payload if isinstance(issue, dict)]
+    return [item for item in payload if isinstance(item, dict)]
 
 
 def jira_form_fields(description: str | None) -> dict[str, str]:
@@ -446,3 +447,58 @@ def jira_form_fields(description: str | None) -> dict[str, str]:
         m["name"].strip().lower(): m["value"].strip()
         for m in reversed(list(_FORM_FIELD.finditer(description or "")))
     }
+
+
+# --- Drive ---------------------------------------------------------------
+
+# workspace-mcp search_drive_files(detailed=True), one line per file:
+#   - Name: "Plan" (ID: 1Ab, Type: application/vnd.google-apps.document, Size: 10,
+#     Created: <RFC 3339>, Modified: <RFC 3339>, Last Edited By: Ann <a@x.com>,
+#     Anyone with link: reader) Link: https://docs.google.com/...
+# Size, Created, Last Edited By and Anyone with link are each optional.
+_DRIVE_LINE = re.compile(r'^- Name: "(?P<name>.*)" \(ID: (?P<id>[^,\s)]+)(?P<rest>.*)$')
+_DRIVE_MODIFIED = re.compile(r", Modified: (?P<modified>\d[^,\s)]*)")
+_DRIVE_EDITOR = re.compile(r", Last Edited By: (?P<editor>.*?)(?:, Anyone with link: \w+)?\)")
+_DRIVE_LINK = re.compile(r"\) Link: (?P<link>\S+)\s*$")
+_DRIVE_TOKEN = re.compile(r"^nextPageToken: (\S+)\s*$", re.MULTILINE)
+
+
+def drive_files(text: str) -> tuple[list[dict[str, str | None]], str | None]:
+    """Files and the next page token from a ``search_drive_files`` result.
+
+    Lines that do not match the expected shape are skipped rather than
+    guessed at; "No files found" yields no files.
+    """
+    files: list[dict[str, str | None]] = []
+    for line in (text or "").splitlines():
+        head = _DRIVE_LINE.match(line.strip())
+        if not head:
+            continue
+        rest = head["rest"]
+        modified = _DRIVE_MODIFIED.search(rest)
+        editor = _DRIVE_EDITOR.search(rest)
+        link = _DRIVE_LINK.search(rest)
+        files.append(
+            {
+                "id": head["id"],
+                "name": head["name"],
+                "modified": modified["modified"] if modified else None,
+                "last_edited_by": editor["editor"].strip() if editor else None,
+                "web_link": link["link"] if link and link["link"] != "#" else None,
+            }
+        )
+    token = _DRIVE_TOKEN.search(text or "")
+    return files, token.group(1) if token else None
+
+
+# --- WorkBoard -----------------------------------------------------------
+
+
+def workboard_objectives(payload: Any) -> list[dict[str, Any]]:
+    """The objective dicts of a ``workboard_get_my_objectives_tool`` result.
+
+    mcp-workboard returns ``{"objectives": [...]}`` (``{"error": ...}`` on
+    failure, handled by the caller); a ``result`` wrapper is tolerated. An
+    entry without a name is the server's raw-goal fallback and is skipped.
+    """
+    return [o for o in listed_dicts(payload, "objectives") if o.get("name")]
