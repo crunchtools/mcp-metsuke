@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import httpx as httpx_module
 import httpx2
@@ -40,8 +41,13 @@ from mcp_metsuke_crunchtools.sweep.client import (
     result_from_blocks,
 )
 from mcp_metsuke_crunchtools.sweep.collectors import (
+    CalendarOptions,
     GmailOptions,
+    GmailSearchOptions,
+    JiraOptions,
     SlackOptions,
+    SlackSearchOptions,
+    WorkboardOptions,
     _drop_reason,
     _user_ids,
 )
@@ -555,11 +561,11 @@ class TestJiraParsers:
 
     def test_search_issues_unwraps_and_filters(self) -> None:
         issues = [{"key": "PROJ-1"}]
-        assert parsers.jira_search_issues({"total": 1, "issues": issues}) == issues
-        assert parsers.jira_search_issues({"result": {"issues": issues}}) == issues
-        assert parsers.jira_search_issues({"issues": [*issues, "junk"]}) == issues
-        assert parsers.jira_search_issues([]) == []
-        assert parsers.jira_search_issues({"total": 0}) == []
+        assert parsers.listed_dicts({"total": 1, "issues": issues}, "issues") == issues
+        assert parsers.listed_dicts({"result": {"issues": issues}}, "issues") == issues
+        assert parsers.listed_dicts({"issues": [*issues, "junk"]}, "issues") == issues
+        assert parsers.listed_dicts([], "issues") == []
+        assert parsers.listed_dicts({"total": 0}, "issues") == []
 
 
 # --- client ---------------------------------------------------------------
@@ -2315,3 +2321,453 @@ class TestDropReason:
     def test_self_detection(self, sender: str | None, expected: str | None) -> None:
         facts = {"subject": "Hi", "sender": sender, "ball": "user", "last_at": None}
         assert _drop_reason(facts, self.WINDOW, "smccarty@redhat.com") == expected
+
+
+# --- source readers (spec 004) -------------------------------------------
+
+
+def _err(_backend: str, _tool: str, _args: dict[str, Any]) -> GatewayResult:
+    return GatewayResult(text="", error="backend down")
+
+
+def _section_of(sweep: dict[str, Any]) -> dict[str, Any]:
+    (section,) = sweep["sections"].values()
+    return cast("dict[str, Any]", section)
+
+
+async def _sweep(collector: str, options: dict[str, Any], route: Any) -> tuple[Any, dict[str, Any]]:
+    gw = FakeGateway(route)
+    step = {"section": "s", "collector": collector, "options": options}
+    return gw, _section_of(await run_sweep(SweepSpec(steps=[step]), gw, now=NOW))
+
+
+GMAIL_SEARCH_OPTS = {"backend": "gw-work", "account": "smccarty@redhat.com", "query": "in:sent"}
+
+
+class TestGmailSearchCollector:
+    async def test_keeps_every_thread_and_templates_the_query(self) -> None:
+        opts = {**GMAIL_SEARCH_OPTS, "query": "in:sent after:{window_start}", "lookback_days": 7}
+        gw, section = await _sweep("gmail_search", opts, lambda b, t, a: GMAIL_RESPONSES[t](a))
+        assert section["status"] == "ok"
+        # No ownership, noise or age drop: all four threads come back.
+        assert [r["thread_id"] for r in section["records"]] == ["t1", "t2", "t3", "t4"]
+        (search,) = [a for _, t, a in gw.calls if t == "search_gmail_messages"]
+        assert search["query"] == "in:sent after:2026/09/20"
+        record = section["records"][0]
+        assert record["subject"] == "RHEL EKS support & Hummingbird fit - Follow up"
+        assert record["body"].startswith("Hi Robert")
+        assert record["link"] == "https://mail.google.com/mail/u/0/#all/t1"
+        assert record["last_at"] == "2026-09-25T21:22:57+00:00"
+        assert "ball" not in record
+        assert "ownership_known" not in record
+
+    async def test_window_start_defaults_to_the_report_window(self) -> None:
+        opts = {**GMAIL_SEARCH_OPTS, "query": "in:sent after:{window_start}"}
+        gw, _ = await _sweep("gmail_search", opts, lambda b, t, a: GMAIL_RESPONSES[t](a))
+        assert gw.calls[0][2]["query"] == "in:sent after:2026/09/25"
+
+    async def test_flagged_thread_withholds_subject_and_body(self) -> None:
+        def route(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult:
+            res = GMAIL_RESPONSES[tool](args)
+            return replace(res, flagged=tool == "get_gmail_thread_content")
+
+        _, section = await _sweep("gmail_search", GMAIL_SEARCH_OPTS, route)
+        record = section["records"][0]
+        assert record["flagged"] is True
+        assert record["subject"] is None
+        assert record["body"] is None
+        assert record["from"] == "m@redhat.com"
+
+    async def test_backend_error_is_an_error_section(self) -> None:
+        _, section = await _sweep("gmail_search", GMAIL_SEARCH_OPTS, _err)
+        assert section["status"] == "error"
+        assert section["errors"] == ["search p1: backend down"]
+
+    async def test_paging_stops_at_max_pages(self) -> None:
+        def search(args: dict[str, Any]) -> GatewayResult:
+            n = int((args.get("page_token") or "tok0")[3:])
+            return _ok(f"Thread ID: p{n}\ncall again with page_token='tok{n + 1}'")
+
+        handlers = {
+            "search_gmail_messages": search,
+            "get_gmail_thread_content": lambda args: GMAIL_RESPONSES["get_gmail_thread_content"](
+                {"thread_id": "t1"}
+            ),
+        }
+        gw, section = await _sweep(
+            "gmail_search", GMAIL_SEARCH_OPTS, lambda b, t, a: handlers[t](a)
+        )
+        searches = [a.get("page_token") for _, t, a in gw.calls if t == "search_gmail_messages"]
+        assert searches == [None, "tok1", "tok2", "tok3", "tok4"]
+        assert section["stats"]["search_pages_truncated"] is True
+        assert len(section["records"]) == 5
+
+    def test_options_are_bounded(self) -> None:
+        with pytest.raises(ValidationError):
+            GmailSearchOptions(**{**GMAIL_SEARCH_OPTS, "max_threads": 201})
+        with pytest.raises(ValidationError):
+            GmailSearchOptions(**{**GMAIL_SEARCH_OPTS, "query_extra": "x"})
+
+
+def _slack_hit(n: int, ts: datetime, user: str = SCOTT, **channel: Any) -> dict[str, Any]:
+    return {
+        "channel": {"id": f"C{n}", "name": f"chan{n}", **channel},
+        "user": user,
+        "username": "smccarty",
+        "ts": f"{ts.timestamp():.6f}",
+        "text": f"message {n} " + "x" * 900,
+        "permalink": f"https://redhat-internal.slack.com/archives/C{n}/p{n}",
+    }
+
+
+SLACK_SEARCH_OPTS = {"query": "from:me after:{date}"}
+SAT = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
+
+
+def _slack_search_route(pages: list[list[dict[str, Any]]], flagged: bool = False) -> Any:
+    def search(args: dict[str, Any]) -> GatewayResult:
+        page = args["page"]
+        matches = pages[page - 1] if page <= len(pages) else []
+        return _ok({"matches": matches, "pagination": {"page_count": len(pages)}}, flagged=flagged)
+
+    handlers = {
+        "slack_search_messages": search,
+        "slack_get_user_info": lambda args: _ok({"user": {"real_name": "Scott McCarty"}}),
+    }
+    return lambda backend, tool, args: handlers[tool](args)
+
+
+class TestSlackSearchCollector:
+    async def test_records_names_and_date_template(self) -> None:
+        hits = [
+            _slack_hit(1, SAT),
+            _slack_hit(2, SAT, is_im=True),
+            # Before the window start (Fri 06:00 ET): Slack's after: is day-granular.
+            _slack_hit(3, datetime(2026, 9, 25, 9, 0, tzinfo=UTC)),
+        ]
+        gw, section = await _sweep("slack_search", SLACK_SEARCH_OPTS, _slack_search_route([hits]))
+        assert gw.calls[0][2]["query"] == "from:me after:2026-09-24"
+        assert gw.calls[0][2]["count"] == 20
+        assert section["status"] == "ok"
+        assert section["stats"]["dropped_before_start"] == 1
+        first, dm = section["records"]
+        assert first["where"] == "#chan1"
+        assert dm["where"] == "DM"
+        assert first["author"] == "Scott McCarty"
+        assert first["link"] == "https://redhat-internal.slack.com/archives/C1/p1"
+        assert len(first["text"]) == 700
+        # One distinct author, one lookup.
+        assert [t for _, t, _ in gw.calls].count("slack_get_user_info") == 1
+
+    async def test_flagged_page_withholds_text(self) -> None:
+        route = _slack_search_route([[_slack_hit(1, SAT)]], flagged=True)
+        _, section = await _sweep("slack_search", SLACK_SEARCH_OPTS, route)
+        (record,) = section["records"]
+        assert record["flagged"] is True
+        assert record["text"] is None
+        assert record["where"] == "#chan1"
+
+    async def test_backend_error_is_an_error_section(self) -> None:
+        _, section = await _sweep("slack_search", SLACK_SEARCH_OPTS, _err)
+        assert section["status"] == "error"
+        assert section["errors"] == ["search p1: backend down"]
+
+    async def test_short_page_ends_paging(self) -> None:
+        pages = [[_slack_hit(n, SAT) for n in range(20)], [_slack_hit(99, SAT)], []]
+        gw, section = await _sweep(
+            "slack_search",
+            {**SLACK_SEARCH_OPTS, "resolve_names": False},
+            _slack_search_route(pages),
+        )
+        assert [a["page"] for _, _, a in gw.calls] == [1, 2]
+        assert len(section["records"]) == 21
+        assert section["records"][0]["author"] == "smccarty"
+
+    async def test_paging_stops_at_max_pages(self) -> None:
+        pages = [[_slack_hit(p * 20 + n, SAT) for n in range(20)] for p in range(8)]
+        opts = {**SLACK_SEARCH_OPTS, "max_messages": 100, "resolve_names": False}
+        gw, section = await _sweep("slack_search", opts, _slack_search_route(pages))
+        assert [a["page"] for _, _, a in gw.calls] == [1, 2, 3, 4, 5]
+        assert section["stats"]["search_pages_truncated"] is True
+        assert len(section["records"]) == 100
+
+    def test_options_are_bounded(self) -> None:
+        with pytest.raises(ValidationError):
+            SlackSearchOptions(query="x", max_messages=101)
+        with pytest.raises(ValidationError):
+            SlackSearchOptions(query="")
+
+
+PAST_CALENDAR_TEXT = """Successfully retrieved events:
+- "Last Thursday sync" (Starts: 2026-09-24T10:00:00-04:00, Ends: 2026-09-24T10:30:00-04:00)
+  Attendee Details: me@x.com: tentative
+  ID: p1 | Link: https://cal/p1
+- "Friday unanswered" (Starts: 2026-09-25T10:00:00-04:00, Ends: 2026-09-25T10:30:00-04:00)
+  Attendee Details: me@x.com: needsAction
+  ID: p2 | Link: https://cal/p2
+- "Way back" (Starts: 2026-09-10T10:00:00-04:00, Ends: 2026-09-30T10:30:00-04:00)
+  Attendee Details: me@x.com: accepted
+  ID: p3 | Link: https://cal/p3
+""" + CALENDAR_TEXT.split("\n", 1)[1]
+
+
+class TestCalendarLookback:
+    async def test_lookback_and_responses(self) -> None:
+        opts = {
+            "backend": "gw-work",
+            "account": "me@x.com",
+            "lookback_days": 7,
+            "responses": ["accepted", "tentative"],
+        }
+        gw, section = await _sweep("calendar_day", opts, lambda b, t, a: _ok(PAST_CALENDAR_TEXT))
+        assert gw.calls[0][2]["time_min"].startswith("2026-09-21T00:00:00")
+        assert section["stats"]["lookback_from"] == "2026-09-21"
+        kinds = {r["title"]: r["kind"] for r in section["records"]}
+        assert kinds == {
+            "Last Thursday sync": "past_meeting",
+            "Remote US OH (Office)": "all_day",
+            "Aqua support": "meeting",
+        }
+
+    async def test_default_drops_events_before_the_report_day(self) -> None:
+        opts = {"backend": "gw-work", "account": "me@x.com"}
+        gw, section = await _sweep("calendar_day", opts, lambda b, t, a: _ok(PAST_CALENDAR_TEXT))
+        assert gw.calls[0][2]["time_min"].startswith("2026-09-28T00:00:00")
+        assert "lookback_from" not in section["stats"]
+        titles = {r["title"] for r in section["records"]}
+        assert titles == {"Remote US OH (Office)", "Aqua support", "Ops review", "Thursday invite"}
+
+    async def test_flagged_withholds_past_titles(self) -> None:
+        opts = {"backend": "gw-work", "account": "me@x.com", "lookback_days": 7}
+        _, section = await _sweep(
+            "calendar_day", opts, lambda b, t, a: _ok(PAST_CALENDAR_TEXT, flagged=True)
+        )
+        past = [r for r in section["records"] if r["kind"] == "past_meeting"]
+        assert past
+        assert all(r["title"] is None for r in past)
+
+    async def test_backend_error_is_an_error_section(self) -> None:
+        opts = {"backend": "gw-work", "account": "me@x.com", "lookback_days": 7}
+        _, section = await _sweep("calendar_day", opts, _err)
+        assert section["status"] == "error"
+
+    @pytest.mark.parametrize(
+        "bad", [{"lookback_days": 31}, {"responses": []}, {"responses": ["declined"]}]
+    )
+    def test_options_are_bounded(self, bad: dict[str, Any]) -> None:
+        with pytest.raises(ValidationError):
+            CalendarOptions(backend="gw-work", account="me@x.com", **bad)
+
+
+def _drive_line(n: int, name: str = "Plan") -> str:
+    return (
+        f'- Name: "{name} {n}" (ID: doc{n}, Type: application/vnd.google-apps.document, '
+        f"Created: 2026-09-01T00:00:00.000Z, Modified: 2026-09-26T1{n % 10}:00:00.000Z, "
+        f"Last Edited By: Ann Lee <ann@redhat.com>, Anyone with link: reader) "
+        f"Link: https://docs.google.com/document/d/doc{n}/edit?usp=drivesdk"
+    )
+
+
+DOCS_OPTS = {"account": "smccarty@redhat.com"}
+
+
+class TestDocsSearchCollector:
+    async def test_modified_query_and_records(self) -> None:
+        text = (
+            "Found 2 files:\n"
+            + _drive_line(1)
+            + "\n"
+            + (
+                '- Name: "Bare, "quoted" doc" (ID: doc2, '
+                "Type: application/vnd.google-apps.document, "
+                "Modified: 2026-09-26T09:00:00.000Z) Link: #"
+            )
+        )
+        opts = {**DOCS_OPTS, "query_extra": "'me' in owners"}
+        gw, section = await _sweep("docs_search", opts, lambda b, t, a: _ok(text))
+        backend, tool, args = gw.calls[0]
+        assert (backend, tool) == ("gw-work", "search_drive_files")
+        assert args["query"] == "modifiedTime > '2026-09-25T10:00:00' and ('me' in owners)"
+        assert args["file_type"] == "document"
+        assert args["order_by"] == "modifiedTime desc"
+        first, second = section["records"]
+        assert first == {
+            "doc_id": "doc1",
+            "name": "Plan 1",
+            "modified": "2026-09-26T11:00:00.000Z",
+            "last_edited_by": "Ann Lee <ann@redhat.com>",
+            "link": "https://docs.google.com/document/d/doc1/edit",
+            "flagged": False,
+        }
+        assert second["name"] == 'Bare, "quoted" doc'
+        assert second["last_edited_by"] is None
+
+    async def test_no_files_is_ok_and_empty(self) -> None:
+        _, section = await _sweep(
+            "docs_search", DOCS_OPTS, lambda b, t, a: _ok("No files found for 'x'.")
+        )
+        assert (section["status"], section["records"]) == ("ok", [])
+
+    async def test_flagged_withholds_names(self) -> None:
+        _, section = await _sweep(
+            "docs_search", DOCS_OPTS, lambda b, t, a: _ok(_drive_line(1), flagged=True)
+        )
+        (record,) = section["records"]
+        assert record["name"] is None
+        assert record["last_edited_by"] == "ann@redhat.com"
+        assert record["link"] == "https://docs.google.com/document/d/doc1/edit"
+
+    async def test_backend_error_is_an_error_section(self) -> None:
+        _, section = await _sweep("docs_search", DOCS_OPTS, _err)
+        assert section["status"] == "error"
+
+    async def test_paging_stops_at_max_pages(self) -> None:
+        def route(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult:
+            n = int((args.get("page_token") or "t0")[1:])
+            return _ok(_drive_line(n) + f"\nnextPageToken: t{n + 1}")
+
+        gw, section = await _sweep("docs_search", DOCS_OPTS, route)
+        assert [a.get("page_token") for _, _, a in gw.calls] == [None, "t1", "t2", "t3", "t4"]
+        assert section["stats"]["search_pages_truncated"] is True
+        assert len(section["records"]) == 5
+
+
+WORKBOARD_PAYLOAD = {
+    "objectives": [
+        {
+            "objective_id": 11,
+            "name": "Ship RHHI GA",
+            "progress": "40%",
+            "owner": "Scott McCarty",
+            "team": "RHEL PM",
+            "status_color": "green",
+            "dates": "2026-07-01 to 2026-12-31",
+            "key_results": [
+                {
+                    "key_result_id": 101,
+                    "name": "300 images",
+                    "progress": "150 of 300",
+                    "target_date": "2026-12-31",
+                    "last_updated": "2026-09-20",
+                }
+            ],
+        },
+        {"objective_id": 12, "workstreams": []},  # raw-goal fallback, no name
+    ],
+    "skipped": [{"objective_id": 13, "error": "Not accessible"}],
+}
+
+
+class TestWorkboardCollector:
+    async def test_objectives_and_key_results(self) -> None:
+        gw, section = await _sweep(
+            "workboard_objectives", {}, lambda b, t, a: _ok(WORKBOARD_PAYLOAD)
+        )
+        assert gw.calls == [("workboard", "workboard_get_my_objectives_tool", {})]
+        assert section["stats"]["objectives"] == 1
+        assert section["stats"]["skipped"] == 1
+        objective, kr = section["records"]
+        assert (objective["kind"], objective["name"], objective["status"]) == (
+            "objective",
+            "Ship RHHI GA",
+            "green",
+        )
+        assert kr["kind"] == "key_result"
+        assert (kr["objective_id"], kr["key_result_id"], kr["owner"]) == (11, 101, "Scott McCarty")
+        assert (kr["progress"], kr["target_date"]) == ("150 of 300", "2026-12-31")
+
+    async def test_objective_ids_are_passed(self) -> None:
+        gw, _ = await _sweep(
+            "workboard_objectives",
+            {"backend": "wb", "objective_ids": [11]},
+            lambda b, t, a: _ok(WORKBOARD_PAYLOAD),
+        )
+        assert gw.calls[0][0] == "wb"
+        assert gw.calls[0][2] == {"objective_ids": [11]}
+
+    async def test_flagged_withholds_names(self) -> None:
+        _, section = await _sweep(
+            "workboard_objectives", {}, lambda b, t, a: _ok(WORKBOARD_PAYLOAD, flagged=True)
+        )
+        assert all(r["name"] is None and r["flagged"] for r in section["records"])
+        assert section["records"][1]["progress"] == "150 of 300"
+
+    async def test_backend_error_and_error_payload(self) -> None:
+        _, section = await _sweep("workboard_objectives", {}, _err)
+        assert section["status"] == "error"
+        _, section = await _sweep(
+            "workboard_objectives",
+            {},
+            lambda b, t, a: _ok({"error": "Could not determine current user ID"}),
+        )
+        assert section["status"] == "error"
+        assert section["errors"] == ["objectives: backend reported an error"]
+
+    async def test_records_are_capped(self) -> None:
+        many = {
+            "objectives": [
+                {"objective_id": n, "name": f"O{n}", "key_results": [{"name": "kr"}] * 4}
+                for n in range(40)
+            ]
+        }
+        _, section = await _sweep("workboard_objectives", {}, lambda b, t, a: _ok(many))
+        assert len(section["records"]) == 150
+        assert section["stats"]["truncated"] == 50
+
+    def test_options_are_bounded(self) -> None:
+        with pytest.raises(ValidationError):
+            WorkboardOptions(objective_ids=[0])
+        with pytest.raises(ValidationError):
+            WorkboardOptions(objective_ids=list(range(1, 27)))
+
+
+class TestJiraProbe:
+    STEP: ClassVar[dict[str, Any]] = {
+        **JIRA_STEP,
+        "options": {**JIRA_STEP["options"], "probe_key": "RHELBU-4132"},
+    }
+
+    async def test_probe_ok_runs_queries(self) -> None:
+        gw = FakeGateway(lambda b, t, a: _ok({"total": 1, "issues": JIRA_ISSUES[:1]}))
+        sweep = await run_sweep(SweepSpec(steps=[self.STEP]), gw, now=NOW)
+        assert gw.calls[0][2] == {"jql": "key = RHELBU-4132", "limit": 1, "fields": "status"}
+        assert len(gw.calls) == 3
+        section = sweep["sections"]["tickets"]
+        assert section["status"] == "ok"
+        assert len(section["records"]) == 2
+
+    @pytest.mark.parametrize("payload", [{"total": -1, "issues": []}, {"total": 0}, ""])
+    async def test_empty_probe_is_an_error(self, payload: Any) -> None:
+        gw = FakeGateway(lambda b, t, a: _ok(payload))
+        sweep = await run_sweep(SweepSpec(steps=[self.STEP]), gw, now=NOW)
+        section = sweep["sections"]["tickets"]
+        assert len(gw.calls) == 1
+        assert section["status"] == "error"
+        assert section["errors"] == [
+            "probe RHELBU-4132: jira backend returned nothing for known key RHELBU-4132"
+        ]
+
+    async def test_failed_probe_is_an_error(self) -> None:
+        sweep = await run_sweep(SweepSpec(steps=[self.STEP]), FakeGateway(_err), now=NOW)
+        assert sweep["sections"]["tickets"]["status"] == "error"
+
+    def test_probe_key_is_validated(self) -> None:
+        with pytest.raises(ValidationError):
+            JiraOptions(queries=[{"label": "a", "jql": "x"}], probe_key="not a key")
+
+
+class TestSlackSearchShapes:
+    async def test_missing_pagination_reads_until_a_short_page(self) -> None:
+        pages = [[_slack_hit(n, SAT) for n in range(20)], [_slack_hit(99, SAT)]]
+
+        def route(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult:
+            return _ok({"matches": pages[args["page"] - 1]})
+
+        opts = {**SLACK_SEARCH_OPTS, "resolve_names": False}
+        gw, section = await _sweep("slack_search", opts, route)
+        assert [a["page"] for _, _, a in gw.calls] == [1, 2]
+        assert len(section["records"]) == 21
+
+    async def test_non_object_payload_is_an_error(self) -> None:
+        _, section = await _sweep("slack_search", SLACK_SEARCH_OPTS, lambda b, t, a: _ok([1]))
+        assert section["status"] == "error"

@@ -132,7 +132,11 @@ flags are stored as metadata only, with their text withheld.
 | `gmail_waiting` | Inbox threads in the window (or `lookback_days`) where the backend's ownership analysis says the ball is in the user's court; automated mail, bare calendar notices and threads newer than `min_age_hours` dropped, invitations kept, `priority_senders` marked `priority` |
 | `calendar_day` | The report day's meetings, pending invites over a lookahead, and hard overlaps |
 | `feed_entries` | Recent entries per feed category (read or unread), with a longer window after a weekend |
-| `jira_issues` | Issues matching each named JQL query, with `{since}` substituted by the window start. Each record carries the key, browse link, status, components and age; where the description is a web intake form, its `Field: value` pairs are parsed into `contact` and a capped `detail` line. A failing query is recorded and the rest still run |
+| `jira_issues` | Issues matching each named JQL query, with `{since}` substituted by the window start. Each record carries the key, browse link, status, components and age; where the description is a web intake form, its `Field: value` pairs are parsed into `contact` and a capped `detail` line. A failing query is recorded and the rest still run. `probe_key` first fetches a known issue; if the backend cannot return it the section is `error`, not "0 new" |
+| `gmail_search` | Every thread a Gmail query matches (`in:sent after:{window_start}`), no ownership or noise filtering; subject and body withheld when flagged |
+| `slack_search` | Every Slack message a search query matches (`from:me after:{date}`), paged 20 at a time, authors resolved to names, permalink as link |
+| `docs_search` | Google Docs modified since the window start (workspace-mcp `search_drive_files`, newest first), with a `docs.google.com/document/d/{id}/edit` link |
+| `workboard_objectives` | The user's WorkBoard objectives, each followed by its key results: name, progress, status, owner |
 
 ### Collector options
 
@@ -164,6 +168,8 @@ window: from that hour on the previous weekday until the run.
 | | `account` | yes | | |
 | | `timezone` | | `America/New_York` | IANA zone |
 | | `lookahead_days` | | 3 | 0-14 (pending invites) |
+| | `lookback_days` | | 0 | 0-30, also read N days before the report day (`past_meeting` / `past_all_day`) |
+| | `responses` | | all but declined | 1-3 of `accepted`, `tentative`, `needsAction` |
 | `feed_entries` | `categories` | yes | | 1-12 entries of `"<id>": <limit>`, id ≤9 digits, limit 1-100 |
 | | `backend` | | `feeds` | |
 | | `since_days` | | 1 | 1-30 |
@@ -172,6 +178,26 @@ window: from that hour on the previous weekday until the run.
 | | `backend` | | `jira` | ≤64 chars; needs `jira_search` allowed |
 | | `browse_url` | | `https://redhat.atlassian.net/browse/` | ≤200 chars, prefixed to the issue key |
 | | `detail_chars` | | 800 | 0-2000 (0 = no form detail line) |
+| | `probe_key` | | none | a Jira key known to exist, e.g. `RHELBU-4132` |
+| `gmail_search` | `backend`, `account` | yes | | as `gmail_waiting` |
+| | `query` | yes | | ≤500 chars, `{window_start}` → read start as `YYYY/MM/DD` |
+| | `lookback_days` | | report window | 1-30 |
+| | `max_threads` / `body_chars` / `link_template` | | 60 / 1200 / Gmail | as `gmail_waiting` |
+| `slack_search` | `query` | yes | | ≤500 chars, `{date}` → day before the read start (Slack `after:` is exclusive) |
+| | `backend` | | `slack` | |
+| | `lookback_days` | | report window | 1-30 |
+| | `max_messages` | | 60 | 1-100 |
+| | `text_chars` | | 700 | 0-2000 |
+| | `resolve_names` | | true | |
+| | `workspace_url` | | `https://redhat-internal.slack.com` | permalink fallback |
+| `docs_search` | `account` | yes | | |
+| | `backend` | | `gw-work` | needs `search_drive_files` allowed |
+| | `query_extra` | | `""` | ≤500 chars Drive query, ANDed on (e.g. `'me' in owners`) |
+| | `lookback_days` | | report window | 1-30 |
+| | `max_docs` | | 50 | 1-100 |
+| | `link_template` | | `https://docs.google.com/document/d/{id}/edit` | ≤200 chars |
+| `workboard_objectives` | `backend` | | `workboard` | needs `workboard_get_my_objectives_tool` allowed |
+| | `objective_ids` | | auto-discovered | 1-25 positive ids |
 
 Collectors are code in `sweep/collectors.py`, not configuration: a definition
 can only pick and parameterize them. A bad spec is rejected at
