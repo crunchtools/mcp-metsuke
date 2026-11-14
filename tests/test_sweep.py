@@ -49,6 +49,7 @@ from mcp_metsuke_crunchtools.sweep.collectors import (
     SlackSearchOptions,
     WorkboardOptions,
     _drop_reason,
+    _page_count,
     _user_ids,
 )
 from mcp_metsuke_crunchtools.sweep.window import next_weekday, previous_weekday_at
@@ -2879,3 +2880,21 @@ class TestSourceReaderCaps:
             "Offsite": "past_all_day",
             "First lookback day": "past_meeting",
         }
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"pagination": {"page_count": 3}}, 3),
+        ({"pagination": {"page_count": "4"}}, 4),
+        ({"pagination": {"page_count": True}}, 9),
+        ({"pagination": {"page_count": "abc"}}, 9),
+        ({"pagination": {"page_count": -2}}, 9),
+        ({"pagination": {"page_count": [1]}}, 9),
+        ({"pagination": {}}, 9),
+        ({"pagination": "junk"}, 9),
+        ([], 9),
+    ],
+)
+def test_page_count_falls_back_on_malformed_pagination(payload: Any, expected: int) -> None:
+    assert _page_count(payload, 9) == expected
