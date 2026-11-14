@@ -2771,3 +2771,111 @@ class TestSlackSearchShapes:
     async def test_non_object_payload_is_an_error(self) -> None:
         _, section = await _sweep("slack_search", SLACK_SEARCH_OPTS, lambda b, t, a: _ok([1]))
         assert section["status"] == "error"
+
+
+class TestSourceReaderCaps:
+    """Caps below the page maximum, per-thread failures and odd pagination (PR #98 review)."""
+
+    async def test_gmail_thread_failure_is_partial_and_later_threads_kept(self) -> None:
+        failed = GatewayResult(text="", error="boom")
+        content = GMAIL_RESPONSES["get_gmail_thread_content"]
+        handlers = {
+            "search_gmail_messages": GMAIL_RESPONSES["search_gmail_messages"],
+            "get_gmail_thread_content": lambda args: (
+                failed if args["thread_id"] == "t2" else content(args)
+            ),
+        }
+        _, section = await _sweep("gmail_search", GMAIL_SEARCH_OPTS, lambda b, t, a: handlers[t](a))
+        assert section["status"] == "partial"
+        assert section["errors"] == ["thread t2: boom"]
+        assert [r["thread_id"] for r in section["records"]] == ["t1", "t3", "t4"]
+
+    async def test_gmail_max_threads_stops_paging(self) -> None:
+        def search(args: dict[str, Any]) -> GatewayResult:
+            n = int((args.get("page_token") or "tok0")[3:])
+            ids = "".join(f"Thread ID: p{n}-{i}\n" for i in range(25))
+            return _ok(f"{ids}call again with page_token='tok{n + 1}'")
+
+        handlers = {
+            "search_gmail_messages": search,
+            "get_gmail_thread_content": lambda args: GMAIL_RESPONSES["get_gmail_thread_content"](
+                {"thread_id": "t1"}
+            ),
+        }
+        gw, section = await _sweep(
+            "gmail_search",
+            {**GMAIL_SEARCH_OPTS, "max_threads": 30},
+            lambda b, t, a: handlers[t](a),
+        )
+        tools = [t for _, t, _ in gw.calls]
+        assert tools.count("search_gmail_messages") == 2
+        assert tools.count("get_gmail_thread_content") == 30
+        assert section["stats"]["search_pages_truncated"] is True
+        assert section["stats"]["threads_found"] == 50
+        assert section["stats"]["truncated"] == 20
+        assert len(section["records"]) == 30
+
+    async def test_slack_max_messages_below_page_cap(self) -> None:
+        pages = [[_slack_hit(p * 20 + n, SAT) for n in range(20)] for p in range(5)]
+        opts = {**SLACK_SEARCH_OPTS, "max_messages": 30, "resolve_names": False}
+        gw, section = await _sweep("slack_search", opts, _slack_search_route(pages))
+        assert [a["page"] for _, _, a in gw.calls] == [1, 2]
+        assert section["stats"]["search_pages_truncated"] is True
+        assert section["stats"]["truncated"] == 10
+        assert len(section["records"]) == 30
+
+    @pytest.mark.parametrize("pagination", ["junk", {"page_count": "many"}, {"page_count": None}])
+    async def test_slack_malformed_pagination_reads_to_a_short_page(self, pagination: Any) -> None:
+        pages = [[_slack_hit(n, SAT) for n in range(20)], [_slack_hit(99, SAT)]]
+
+        def route(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult:
+            return _ok({"matches": pages[args["page"] - 1], "pagination": pagination})
+
+        opts = {**SLACK_SEARCH_OPTS, "resolve_names": False}
+        gw, section = await _sweep("slack_search", opts, route)
+        assert [a["page"] for _, _, a in gw.calls] == [1, 2]
+        assert section["status"] == "ok"
+        assert len(section["records"]) == 21
+
+    async def test_docs_max_docs_below_page_cap(self) -> None:
+        def route(backend: str, tool: str, args: dict[str, Any]) -> GatewayResult:
+            n = int((args.get("page_token") or "t0")[1:])
+            lines = "\n".join(_drive_line(n * 10 + i) for i in range(10))
+            return _ok(f"{lines}\nnextPageToken: t{n + 1}")
+
+        gw, section = await _sweep("docs_search", {**DOCS_OPTS, "max_docs": 15}, route)
+        assert len(gw.calls) == 2
+        assert section["stats"]["search_pages_truncated"] is True
+        assert section["stats"]["truncated"] == 5
+        assert [r["doc_id"] for r in section["records"]][-1] == "doc14"
+        assert len(section["records"]) == 15
+
+    async def test_workboard_cap_stops_expanding(self) -> None:
+        many = {
+            "objectives": [
+                {"objective_id": n, "name": f"O{n}", "key_results": [{"name": "kr"}] * 9}
+                for n in range(20)
+            ]
+        }
+        _, section = await _sweep("workboard_objectives", {}, lambda b, t, a: _ok(many))
+        assert len(section["records"]) == 150
+        assert section["stats"]["truncated"] == 50
+
+    async def test_calendar_past_all_day_and_lookback_boundary(self) -> None:
+        text = """Successfully retrieved events:
+- "Offsite" (Starts: 2026-09-22, Ends: 2026-09-23)
+  Attendee Details: None
+  ID: o1 | Link: https://cal/o1
+- "Day before lookback" (Starts: 2026-09-20T10:00:00-04:00, Ends: 2026-09-20T11:00:00-04:00)
+  Attendee Details: me@x.com: accepted
+  ID: o2 | Link: https://cal/o2
+- "First lookback day" (Starts: 2026-09-21T09:00:00-04:00, Ends: 2026-09-21T10:00:00-04:00)
+  Attendee Details: me@x.com: accepted
+  ID: o3 | Link: https://cal/o3
+"""
+        opts = {"backend": "gw-work", "account": "me@x.com", "lookback_days": 7}
+        _, section = await _sweep("calendar_day", opts, lambda b, t, a: _ok(text))
+        assert {r["title"]: r["kind"] for r in section["records"]} == {
+            "Offsite": "past_all_day",
+            "First lookback day": "past_meeting",
+        }

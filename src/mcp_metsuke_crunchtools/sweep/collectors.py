@@ -248,12 +248,24 @@ async def _search_conversations(
                 break
             for match in payload.get("matches") or []:
                 _add_match(conversations, match, opts.user_id)
-            page_count = int((payload.get("pagination") or {}).get("page_count") or 1)
+            page_count = _page_count(payload, 1)
             if page >= page_count:
                 break
             if page == MAX_PAGES:
                 section["stats"]["search_pages_truncated"] = True
     return conversations
+
+
+def _page_count(payload: Any, default: int) -> int:
+    """A Slack search's ``pagination.page_count``, or ``default`` when absent or malformed."""
+    pagination = payload.get("pagination") if isinstance(payload, dict) else None
+    count = pagination.get("page_count") if isinstance(pagination, dict) else None
+    if isinstance(count, bool):
+        return default
+    try:
+        return int(count) if count and int(count) > 0 else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _add_match(
@@ -1665,8 +1677,8 @@ async def _slack_search_pages(
                 section["stats"]["dropped_before_start"] += 1
                 continue
             records.append(record)
-        # No pagination block: keep reading until a short page.
-        page_count = int((payload.get("pagination") or {}).get("page_count") or MAX_PAGES)
+        # No usable pagination block: keep reading until a short page.
+        page_count = _page_count(payload, MAX_PAGES)
         if len(matches) < SLACK_SEARCH_PAGE_SIZE or page >= page_count:
             break
         if len(records) >= opts.max_messages or page == MAX_PAGES:
@@ -1837,10 +1849,17 @@ async def workboard_objectives(
     section["stats"].update(
         objectives=len(objectives), skipped=len(skipped) if isinstance(skipped, list) else 0
     )
+    truncated = 0
     for objective in objectives:
-        section["records"] += _workboard_records(objective, res.flagged)
-    section["stats"]["truncated"] = max(0, len(section["records"]) - MAX_WORKBOARD_RECORDS)
-    section["records"] = section["records"][:MAX_WORKBOARD_RECORDS]
+        room = MAX_WORKBOARD_RECORDS - len(section["records"])
+        if room <= 0:
+            # Count what is left without expanding it: one record plus its key results.
+            truncated += 1 + len(objective.get("key_results") or [])
+            continue
+        records = _workboard_records(objective, res.flagged)
+        section["records"].extend(records[:room])
+        truncated += max(0, len(records) - room)
+    section["stats"]["truncated"] = truncated
     return _finish(section)
 
 
